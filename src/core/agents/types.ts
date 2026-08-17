@@ -1,4 +1,6 @@
-export type AgentId = "claude" | "devin" | "cursor" | "codex"
+export type BaseAgentId = "claude" | "devin" | "cursor" | "codex"
+export type CgAgentId = `${BaseAgentId}+cg`
+export type AgentId = BaseAgentId | CgAgentId
 
 export type AgentContext = {
   prompt: string

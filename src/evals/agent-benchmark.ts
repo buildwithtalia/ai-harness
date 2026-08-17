@@ -4,10 +4,19 @@ import type { EvalSuite } from "@/core/types"
 const suite: EvalSuite = {
   name: "agent-benchmark",
   description:
-    "Compare coding agents (claude, devin, cursor, codex) on realistic build / find-issue / ask tasks. Judge scores each output on a five-dimension rubric.",
+    "Compare each coding agent (claude, devin, cursor, codex) with and without the Context Graph on realistic build / find-issue / ask tasks. Judge scores each output on a five-dimension rubric.",
   system:
     "You are a senior software engineer. Analyze the task, propose a concrete plan grounded in the referenced codebase, and be explicit about assumptions, dependencies, and risks. Use file paths, function names, and step numbering where helpful.",
-  models: ["claude", "devin", "cursor", "codex"],
+  models: [
+    "claude",
+    "claude+cg",
+    "devin",
+    "devin+cg",
+    "cursor",
+    "cursor+cg",
+    "codex",
+    "codex+cg",
+  ],
   judgeModel: "anthropic/claude-opus-4-7",
   judgeRubric: {
     dimensions: [
