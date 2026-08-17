@@ -58,7 +58,7 @@ Everything below is scaffolded but stubbed / provisional. The wiring is in place
 
 - **Finalize prompts** — `src/evals/agent-benchmark.ts` currently ships 12 prompts (5 build / 3 find / 4 ask). These are the starting draft from the initial spec. Waiting on:
   - Final wording and any additional prompts.
-  - Per-prompt `context` (a repo path, a repo URL, or a free-text block) — every case has `context: {}` as a placeholder. Without repo context, agents produce plausible-but-hypothetical plans; the judge can only grade reasoning quality, not correctness against a real system.
+  - Per-prompt fixture repos. All 12 cases currently point at [`healthcare-org-app/healthcare-infra`](https://github.com/healthcare-org-app/healthcare-infra) as their `context.repoUrl`. Additional fixture repos (e.g. a fintech-shaped one for `payments-api`-flavoured prompts, an e-commerce-shaped one for `orders.customer_id` migrations) will let prompts get retargeted per case. Cursor consumes the repo URL directly via its adapter; Claude / Codex / Devin receive it as text in the prompt.
 - **Finalize agents** — the four adapters (`claude`, `devin`, `cursor`, `codex`) hit the real APIs I could confirm:
   - `claude` and `codex` go through the Vercel AI Gateway. Confirm the exact model IDs to lock in (`anthropic/claude-opus-4-7`, `openai/gpt-5-codex` today).
   - `devin` uses `POST /v1/sessions` + status polling. Confirm the endpoint shape hasn't changed and lock in session-title conventions.
