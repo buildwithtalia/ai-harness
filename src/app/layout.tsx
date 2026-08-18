@@ -30,6 +30,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             <nav className="flex items-center gap-4 text-sm text-muted-foreground">
               <a href="/" className="hover:text-foreground">Runs</a>
               <a href="/compare" className="hover:text-foreground">Compare</a>
+              <a href="/prompts" className="hover:text-foreground">Prompts</a>
               <a href="/new" className="hover:text-foreground">New run</a>
             </nav>
           </div>

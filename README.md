@@ -215,6 +215,18 @@ Click **New run** (top-right on the runs index, also `/new`). Pick the suite, un
 
 Runs kicked off from the UI execute in-process inside the Next.js dev server. Closing the terminal or a hot-reload will kill an in-progress run; that's fine for local iteration but means this pattern is dev-only. Deploying to Vercel would need a queue (Vercel Queues / Workflow DevKit).
 
+### Editing prompts from the UI
+
+`/prompts` lists every case in the selected suite. Editable fields — `ticket`, `input`, `context.repoUrl`, `context.repoPath`, `context.text`, `difficulty`, `capabilityAxis[]` — persist to a git-tracked overlay at `data/prompt-overrides.json` keyed by suite name → case id. **Both the runner (CLI + `/new`) and the UI read through the overlay**, so edits take effect on the next run without a rebuild.
+
+Non-overrideable fields stay in code and require a code change:
+- `id`, `metadata.category` — case identity and rubric routing.
+- `groundTruth.checks` — deterministic assertions (Zod schemas can't serialise to JSON safely).
+- `judgeRubric` — usually resolved by category anyway.
+- `tools`, `expectedToolSequence` — tool-use case shape.
+
+Each case shows an `overridden` chip when its overlay is non-empty, and a **Reset to code** button that removes the overlay for that case. The overlay file is small and diffable — review edits in a PR like any other change.
+
 ### From the CLI
 
 ```bash
