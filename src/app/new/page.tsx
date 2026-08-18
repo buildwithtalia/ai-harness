@@ -28,11 +28,13 @@ export default async function NewRunPage(props: PageProps<"/new">) {
 
   const agents = baseAgents.map((a) => {
     const base = a.id as BaseAgentId
+    const models = listSupportedModels(base)
     return {
       id: a.id,
       displayName: a.displayName,
       supportsModelOverride: supportsModelOverride(base),
-      supportedModels: listSupportedModels(base),
+      supportedModels: models,
+      defaultModel: models[0] ?? null,
     }
   })
   const providers = listProviders().map((p) => ({
@@ -46,9 +48,9 @@ export default async function NewRunPage(props: PageProps<"/new">) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New run</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Pick a suite, choose which agents to run, and pick which context providers to compare
-          them against. Every selected agent runs once as a baseline (if the box is checked) and
-          once per selected provider.
+          For each coding framework: pick model(s), then pick which conditions to run — baseline,
+          <span className="font-mono"> +cg</span>, <span className="font-mono">+orbit</span>, or
+          any combination. The target list is the cross product of the boxes you check.
         </p>
       </div>
 

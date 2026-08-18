@@ -21,7 +21,15 @@ export type AgentInfo = {
   displayName: string
   supportsModelOverride: boolean
   supportedModels: string[]
+  defaultModel: string | null
 }
+
+type PerAgentState = {
+  models: Set<string>
+  variants: Set<string> // "baseline" or a providerId
+}
+
+const BASELINE = "baseline"
 
 export function NewRunForm({
   suites,
@@ -39,16 +47,18 @@ export function NewRunForm({
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(
     () => new Set(agents.map((a) => a.id)),
   )
-  const [selectedProviders, setSelectedProviders] = useState<Set<string>>(
-    () => new Set(providers.filter((p) => p.configured).map((p) => p.id)),
-  )
-  // Per-agent model selection: agent id → Set<modelId>. Empty set = "use the
-  // adapter's default model" (single target per condition, no @model suffix).
-  const [selectedModels, setSelectedModels] = useState<Record<string, Set<string>>>(
-    () => Object.fromEntries(agents.map((a) => [a.id, new Set<string>()])),
-  )
-  const [modelsExpanded, setModelsExpanded] = useState<Record<string, boolean>>({})
-  const [includeBaseline, setIncludeBaseline] = useState(true)
+  const [perAgent, setPerAgent] = useState<Record<string, PerAgentState>>(() => {
+    const configured = providers.filter((p) => p.configured).map((p) => p.id)
+    return Object.fromEntries(
+      agents.map((a) => [
+        a.id,
+        {
+          models: new Set<string>(a.defaultModel ? [a.defaultModel] : []),
+          variants: new Set<string>([BASELINE, ...configured]),
+        },
+      ]),
+    )
+  })
   const [limit, setLimit] = useState<string>("")
 
   const [state, formAction, pending] = useActionState<StartRunFormState, FormData>(
@@ -61,51 +71,59 @@ export function NewRunForm({
     [suites, suiteName, initial],
   )
 
-  function toggleFrom(set: Set<string>, value: string, apply: (next: Set<string>) => void) {
-    const next = new Set(set)
-    if (next.has(value)) next.delete(value)
-    else next.add(value)
-    apply(next)
+  function toggleAgent(id: string) {
+    setSelectedAgents((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function updateAgentState(id: string, mutator: (s: PerAgentState) => PerAgentState) {
+    setPerAgent((prev) => ({ ...prev, [id]: mutator(prev[id]) }))
   }
 
   function toggleModel(agentId: string, model: string) {
-    setSelectedModels((prev) => {
-      const next = { ...prev }
-      const set = new Set(next[agentId] ?? [])
-      if (set.has(model)) set.delete(model)
-      else set.add(model)
-      next[agentId] = set
-      return next
+    updateAgentState(agentId, (s) => {
+      const models = new Set(s.models)
+      if (models.has(model)) models.delete(model)
+      else models.add(model)
+      return { ...s, models }
+    })
+  }
+
+  function toggleVariant(agentId: string, variant: string) {
+    updateAgentState(agentId, (s) => {
+      const variants = new Set(s.variants)
+      if (variants.has(variant)) variants.delete(variant)
+      else variants.add(variant)
+      return { ...s, variants }
     })
   }
 
   const targets = useMemo(() => {
     const ids: string[] = []
-    const agentIds = Array.from(selectedAgents).sort()
-    const providerIds = Array.from(selectedProviders).sort()
-
-    for (const a of agentIds) {
-      const info = agents.find((x) => x.id === a)
-      const chosen = Array.from(selectedModels[a] ?? [])
-      // If this agent supports model override and the user picked at least one
-      // model, expand over the chosen models. Otherwise use the adapter default
-      // (single target per condition, no @model suffix).
+    for (const agent of agents) {
+      if (!selectedAgents.has(agent.id)) continue
+      const s = perAgent[agent.id]
       const modelChoices =
-        info?.supportsModelOverride && chosen.length > 0 ? chosen.sort() : [null]
-
-      for (const model of modelChoices) {
-        const stem = model ? `${a}@${model}` : a
-        if (includeBaseline) ids.push(stem)
-        for (const p of providerIds) ids.push(`${stem}+${p}`)
+        agent.supportsModelOverride && s.models.size > 0
+          ? Array.from(s.models).sort()
+          : [null]
+      const variantOrder = [BASELINE, ...providers.map((p) => p.id)]
+      const variantChoices = variantOrder.filter((v) => s.variants.has(v))
+      for (const m of modelChoices) {
+        const stem = m ? `${agent.id}@${m}` : agent.id
+        for (const v of variantChoices) {
+          ids.push(v === BASELINE ? stem : `${stem}+${v}`)
+        }
       }
     }
     return ids
-  }, [selectedAgents, selectedProviders, selectedModels, includeBaseline, agents])
+  }, [selectedAgents, perAgent, agents, providers])
 
-  const disabled =
-    pending ||
-    targets.length === 0 ||
-    (!includeBaseline && selectedProviders.size === 0)
+  const disabled = pending || targets.length === 0
 
   return (
     <form action={formAction} className="space-y-5">
@@ -128,112 +146,132 @@ export function NewRunForm({
         )}
       </div>
 
-      <fieldset className="space-y-1.5">
-        <legend className="text-sm font-medium">
-          Agents{" "}
-          <span className="text-xs text-muted-foreground">
-            ({selectedAgents.size}/{agents.length})
-          </span>
-        </legend>
-        <div className="space-y-1">
-          {agents.map((a) => {
-            const isOn = selectedAgents.has(a.id)
-            const modelSet = selectedModels[a.id] ?? new Set<string>()
-            const expanded = modelsExpanded[a.id] ?? false
+      <div className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h2 className="text-sm font-medium">
+            Agents{" "}
+            <span className="text-xs text-muted-foreground">
+              ({selectedAgents.size}/{agents.length})
+            </span>
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            For each framework: pick model(s), then pick which conditions to run
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          {agents.map((agent) => {
+            const isOn = selectedAgents.has(agent.id)
+            const s = perAgent[agent.id]
+            const modelCount =
+              agent.supportsModelOverride && s.models.size > 0 ? s.models.size : 1
+            const variantCount = s.variants.size
+            const targetsForAgent = isOn ? modelCount * variantCount : 0
             return (
-              <div key={a.id} className="rounded border">
-                <div className="flex items-center gap-2 px-2 py-1.5 text-xs">
+              <div
+                key={agent.id}
+                className={`rounded border ${
+                  isOn ? "border-border" : "border-dashed border-muted"
+                }`}
+              >
+                <label className="flex cursor-pointer items-center gap-2 border-b px-3 py-2">
                   <input
                     type="checkbox"
                     checked={isOn}
-                    onChange={() => toggleFrom(selectedAgents, a.id, setSelectedAgents)}
+                    onChange={() => toggleAgent(agent.id)}
                   />
-                  <span className="font-mono">{a.id}</span>
-                  <span className="text-muted-foreground">— {a.displayName}</span>
-                  {a.supportsModelOverride && isOn && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setModelsExpanded((s) => ({ ...s, [a.id]: !s[a.id] }))
-                      }
-                      className="ml-auto rounded border px-1.5 py-0.5 text-[10px] hover:bg-accent/50"
-                    >
-                      {modelSet.size > 0
-                        ? `${modelSet.size} model${modelSet.size === 1 ? "" : "s"}`
-                        : "default model"}{" "}
-                      {expanded ? "▾" : "▸"}
-                    </button>
-                  )}
-                  {!a.supportsModelOverride && isOn && (
-                    <span className="ml-auto text-[10px] text-muted-foreground">
-                      picks its own model
+                  <span className="font-mono text-sm">{agent.id}</span>
+                  <span className="text-xs text-muted-foreground">
+                    — {agent.displayName}
+                  </span>
+                  {isOn && (
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      {targetsForAgent} target{targetsForAgent === 1 ? "" : "s"}
                     </span>
                   )}
-                </div>
-                {a.supportsModelOverride && isOn && expanded && (
-                  <div className="border-t bg-muted/30 px-2 py-1.5 space-y-0.5">
-                    <p className="text-[10px] text-muted-foreground">
-                      Uncheck all to use the adapter default. Any subset runs one target per
-                      model.
-                    </p>
-                    {a.supportedModels.map((m) => (
-                      <label
-                        key={m}
-                        className="flex items-center gap-2 text-xs cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={modelSet.has(m)}
-                          onChange={() => toggleModel(a.id, m)}
-                        />
-                        <span className="font-mono">{m}</span>
-                      </label>
-                    ))}
+                </label>
+
+                {isOn && (
+                  <div className="grid gap-3 p-3 md:grid-cols-2">
+                    {/* Model column */}
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium">Model</div>
+                      {agent.supportsModelOverride ? (
+                        <div className="space-y-1">
+                          {agent.supportedModels.map((m) => (
+                            <label
+                              key={m}
+                              className="flex items-center gap-2 text-xs cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={s.models.has(m)}
+                                onChange={() => toggleModel(agent.id, m)}
+                              />
+                              <span className="font-mono">{m}</span>
+                              {agent.defaultModel === m && (
+                                <span className="rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+                                  default
+                                </span>
+                              )}
+                            </label>
+                          ))}
+                          {s.models.size === 0 && (
+                            <p className="text-[11px] text-muted-foreground">
+                              Nothing checked — will use the adapter default (
+                              <span className="font-mono">{agent.defaultModel}</span>).
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          <span className="font-mono">{agent.id}</span> picks its own model
+                          per session; no override.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Variant column */}
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium">Compare against</div>
+                      <div className="space-y-1">
+                        <label className="flex items-center gap-2 text-xs cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={s.variants.has(BASELINE)}
+                            onChange={() => toggleVariant(agent.id, BASELINE)}
+                          />
+                          <span className="font-mono">baseline</span>
+                          <span className="text-muted-foreground">— no provider</span>
+                        </label>
+                        {providers.map((p) => (
+                          <label
+                            key={p.id}
+                            className="flex items-center gap-2 text-xs cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={s.variants.has(p.id)}
+                              onChange={() => toggleVariant(agent.id, p.id)}
+                            />
+                            <span className="font-mono">+{p.id}</span>
+                            <span className="text-muted-foreground">— {p.displayName}</span>
+                            {!p.configured && (
+                              <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+                                env missing
+                              </span>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
             )
           })}
         </div>
-      </fieldset>
-
-      <fieldset className="space-y-1.5">
-        <legend className="text-sm font-medium">
-          Context providers{" "}
-          <span className="text-xs text-muted-foreground">
-            ({selectedProviders.size}/{providers.length})
-          </span>
-        </legend>
-        <div className="space-y-1">
-          {providers.map((p) => (
-            <label
-              key={p.id}
-              className="flex items-center gap-2 rounded border px-2 py-1.5 text-xs cursor-pointer hover:bg-accent/50"
-            >
-              <input
-                type="checkbox"
-                checked={selectedProviders.has(p.id)}
-                onChange={() => toggleFrom(selectedProviders, p.id, setSelectedProviders)}
-              />
-              <span className="font-mono">+{p.id}</span>
-              <span className="text-muted-foreground">— {p.displayName}</span>
-              {!p.configured && (
-                <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-                  env missing
-                </span>
-              )}
-            </label>
-          ))}
-        </div>
-        <label className="mt-2 flex items-center gap-2 text-xs">
-          <input
-            type="checkbox"
-            checked={includeBaseline}
-            onChange={(e) => setIncludeBaseline(e.target.checked)}
-          />
-          Include baseline (no provider)
-        </label>
-      </fieldset>
+      </div>
 
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between">
@@ -244,7 +282,7 @@ export function NewRunForm({
         </div>
         {targets.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            Pick at least one agent, plus either a provider or the baseline checkbox.
+            Pick at least one agent and one condition (baseline or provider).
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5 rounded border p-2">
