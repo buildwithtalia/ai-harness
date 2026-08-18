@@ -7,20 +7,29 @@ An eval harness for comparing coding agents **with and without any context provi
 ```
 ┌──────────────┐   ┌──────────────┐   ┌─────────────┐   ┌───────────────┐
 │  Eval suite  │──▶│    Runner    │──▶│   Adapters  │──▶│  Model / API  │
-│  (prompts)   │   │  (src/core)  │   │ (src/core/  │   │  (AI Gateway, │
-│              │   │              │   │  agents)    │   │   Devin, ...) │
-└──────────────┘   └──────────────┘   └─────────────┘   └───────────────┘
-                          │
-                          ▼
-                    ┌──────────────┐
-                    │   Scorers    │  exact / regex / LLM-judge / tool-trace
-                    └──────────────┘
-                          │
-                          ▼
-                    ┌──────────────┐   ┌───────────────┐
-                    │  runs/<id>/  │──▶│   Dashboard   │  /  ·  /runs/[id]  ·  /compare
-                    │  JSONL       │   │  (Next.js)    │
-                    └──────────────┘   └───────────────┘
+│  (prompts    │   │  (src/core)  │   │ base +      │   │  AI Gateway,  │
+│   + tickets) │   │              │   │ withProvider│   │  Devin API,   │
+│              │   │              │   │             │   │  Cursor API   │
+└──────┬───────┘   └──────┬───────┘   └─────────────┘   └───────────────┘
+       │                  │                  │
+       │                  ▼                  ▼
+       │            ┌──────────────┐   ┌─────────────────┐
+       │            │   Scorers    │   │ Context providers│
+       │            │  det. +      │   │   cg · orbit ·   │
+       │            │  llmJudge    │   │   (registry)     │
+       │            └──────┬───────┘   └─────────────────┘
+       │                   │
+       │                   ▼
+       │             ┌──────────────┐   ┌───────────────┐   ┌──────────────┐
+       │             │  runs/<id>/  │──▶│   Dashboard   │   │ skill-hook   │
+       │             │  JSONL       │   │  (Next.js)    │   │ POST + JSON  │
+       │             └──────────────┘   └───────────────┘   └──────────────┘
+       │                                        │                  │
+       ▼                                        ▼                  ▼
+┌───────────────┐                       / · /runs/[id]     results/skill-input.json
+│ /prompts (UI) │                       /compare · /new       + SKILL_WEBHOOK_URL
+│  overlay JSON │
+└───────────────┘
 ```
 
 1. **A suite** (`src/evals/agent-benchmark.ts`) is a list of prompts + rubric(s) + a list of target ids. Ids can be coding agents (`claude`, `devin`, `cursor`, `codex`), their **composed** context-provider variants (`claude+cg`, `claude+orbit`, `devin+cg`, …), or raw model strings for the Vercel AI Gateway (`anthropic/claude-opus-4-7`, `openai/gpt-5`, …). A composed id is `<base>+<providerId>` where the provider slug comes from `src/core/context-providers/` (`cg` for Context Graph, `orbit` for Orbit, …). Prompts are framed **APIFlow-Bench-style** — each case has a `ticket` block (broken call + error hint + ask) that the runner prepends to the input, so the agent reads a realistic dev ticket instead of a clean prompt.
@@ -32,7 +41,13 @@ An eval harness for comparing coding agents **with and without any context provi
 
    Other scorers exist for exact/regex/tool-trace evals.
 5. **Artifacts** land in `runs/<ISO>__<suite>/` as `manifest.json` + `cases.jsonl` (one row per `(target, case)`). Each case row also carries `category`, `difficulty` (`easy` / `medium` / `hard`), `capabilityAxis[]` (APIFlow-Bench-style tags: `authentication`, `discovery`, `schema_repair`, `multistep`, `error_recovery`, `pagination`, `statefulness`, `impact_analysis`, `docs_alignment`, `security_review`), and `diagnostics` (CodeGraph-style orientation metrics: `toolCallCount`, `stepCount`, and — for composed targets — `providerId`, `providerLatencyMs`, `providerDocumentCount`). The directory is gitignored.
-6. **The dashboard** (`src/app/`) is a Next.js App Router app that reads `runs/` via `fs/promises`. `/` lists runs; `/runs/[id]` shows model aggregates + a case-by-case drawer; `/compare?run=<id>` renders quality/cost/latency charts and a disagreement table for a given run.
+6. **The dashboard** (`src/app/`) is a Next.js App Router app that reads `runs/` via `fs/promises`. Routes:
+   - `/` — runs index with per-row status pill (`running` / `errored` / done) and a **New run** button.
+   - `/runs/[id]` — model aggregates, a case × target matrix, and a per-case drawer showing dimensions, ground-truth check breakdown, tool calls, and diagnostics. While `status === "running"` the page auto-refreshes every 3 s so cells appear as they complete.
+   - `/compare?run=<id>` — **Metrics matrix** (all targets × pass / score / cost / p50 / p95 / per-category rollups; best cell per column highlighted) + **Context-provider delta** table (one row per `(agent, provider)` pair, green when the provider moved the metric in the desired direction) + quality/cost/latency bar charts + a disagreement table.
+   - `/prompts` — edit the ticket / input / context / difficulty / capability tags for each case. Edits persist to a git-tracked JSON overlay (`data/prompt-overrides.json`) that the runner reads through, so changes take effect on the next run without a rebuild.
+   - `/new` — two-level selector (agents × context providers, plus an "include baseline" toggle) with a live preview of the computed target list, then kicks off a run via a server action.
+7. **The skill hook** (`src/core/skill-hook.ts`) fires at the end of every run — CLI, `/new`, workflows — writing a normalised summary to `results/skill-input.json` and, if `SKILL_WEBHOOK_URL` is set, POSTing it to the release-autopilot skill. Details in the *Release-autopilot skill handshake* section below.
 
 ## How a run executes
 
@@ -50,12 +65,12 @@ A run is a nested `for (target) × for (case)` loop with per-cell error containm
        - **Emit `case-start`** (progress hook, streamed to the CLI or `onProgress` caller).
        - Compose the prompt: if the case has a `ticket`, prepend it to the input. For agent targets the `AgentContext` is built with `contextText`, `contextRepoPath`, and `contextRepoUrl` from `case.context`.
        - **Call the target** — agent adapter (`getAgent(id).run(ctx)`) or `generateText(getModel(id), …)` for raw models. Adapters block on their real APIs (Devin/Cursor sessions can take minutes; the runner polls them internally).
-       - **Time the call** with `performance.now()`; capture `usage` (input/output tokens) and pass it to `estimateCostUsd(target, usage)` for a dollar figure. `latencyMs` for a `+cg` target *includes* the Context Graph lookup — the CG portion is broken out into `diagnostics.contextGraphLatencyMs` so you can subtract it.
+       - **Time the call** with `performance.now()`; capture `usage` (input/output tokens) and pass it to `estimateCostUsd(target, usage)` for a dollar figure. `latencyMs` for a composed target *includes* the provider lookup — the provider portion is broken out into `diagnostics.providerLatencyMs` so you can subtract it.
        - **Run every scorer** on the output. Rubric resolution order for the LLM judge: `case.judgeRubric` → `suite.rubricsByCategory[case.metadata.category]` → `suite.judgeRubric`.
        - **Aggregate** the scorer scores. `aggregateScore = mean(scores.filter(s => s !== null))`. `passed = aggregateScore >= 0.5`.
        - **Append** the resulting `CaseResult` as a single JSONL line to `runs/<id>/cases.jsonl`.
        - **Emit `case-done`** (or `case-error` if the adapter threw — the errored case is still appended with `error.message` and 0 scores so nothing goes missing).
-   - Compute per-model aggregates over the collected results (see the schema below), rewrite `manifest.json` with `status: "completed"` and `finishedAt`. If anything above throws at the loop level, the runner writes `status: "errored"` + `error` and re-throws.
+   - Compute per-model aggregates over the collected results (see the schema below), rewrite `manifest.json` with `status: "completed"` and `finishedAt`, then call `notifySkill(manifest, cases)` (`src/core/skill-hook.ts`) which writes `results/skill-input.json` and, if configured, POSTs it to `SKILL_WEBHOOK_URL`. If anything above throws at the loop level, the runner writes `status: "errored"` + `error` and re-throws (the skill hook is skipped on error).
 
 ### Sequencing choice: targets outer, cases inner
 
@@ -146,7 +161,7 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
 
 ### What "passed" means
 
-`passed = aggregateScore >= 0.5`. That's a lenient default (half the dimensions at midpoint counts as a pass) that suits an early-stage benchmark where absolute pass/fail matters less than the *delta* between base and `+cg`. If you want a stricter cutoff for a leaderboard-style story, raise the threshold in `runner.ts` or expose it on the suite.
+`passed = aggregateScore >= 0.5`. That's a lenient default (half the dimensions at midpoint counts as a pass) that suits an early-stage benchmark where absolute pass/fail matters less than the *delta* between base and each context provider. If you want a stricter cutoff for a leaderboard-style story, raise the threshold in `runner.ts` or expose it on the suite.
 
 ### Anatomy of a run artifact
 
@@ -184,7 +199,7 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
   "usage": { "inputTokens": 812, "outputTokens": 604, "totalTokens": 1416 },
   "costUsd": 0.0577,
   "output": { "text": "…", "toolCalls": [], "steps": [], "finishReason": "stop",
-              "meta": { "contextGraph": { "latencyMs": 340, "documentCount": 7 } } },
+              "meta": { "provider": { "id": "cg", "displayName": "Context Graph", "latencyMs": 340, "documentCount": 7 } } },
   "scores": {
     "deterministic": { "score": 1.0, "label": "4/4 checks",
       "details": { "checks": [{ "type": "must-mention", "pass": true, "description": "..." }, ...] } },
@@ -194,7 +209,7 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
   },
   "aggregateScore": 0.875,
   "passed": true,
-  "diagnostics": { "toolCallCount": 0, "stepCount": 0, "contextGraphLatencyMs": 340, "contextGraphDocumentCount": 7 }
+  "diagnostics": { "toolCallCount": 0, "stepCount": 0, "providerId": "cg", "providerLatencyMs": 340, "providerDocumentCount": 7 }
 }
 ```
 
@@ -211,7 +226,9 @@ pnpm install
 pnpm dev            # http://localhost:3000
 ```
 
-Click **New run** (top-right on the runs index, also `/new`). Pick the suite, uncheck any targets you want to skip, optionally set a case limit, and hit **Start run**. You'll be redirected to the run page, which auto-refreshes every 3 seconds while the run is in progress — cases appear in the matrix as they complete.
+Click **New run** (top-right on the runs index, also `/new`). Pick the suite, choose which **agents** to run (`claude`, `devin`, `cursor`, `codex`), choose which **context providers** to compare them against (`cg`, `orbit`, …), toggle **Include baseline (no provider)** on/off, and optionally set a case limit. The form previews the computed target list live (e.g. `claude, claude+cg, claude+orbit, devin, devin+cg`) and the submit button reads `Start run (<targets> × <cases>)` so cost is visible before you commit. Providers whose env vars aren't set show an `env missing` chip.
+
+You'll be redirected to the run page, which auto-refreshes every 3 seconds while the run is in progress — cases appear in the matrix as they complete.
 
 Runs kicked off from the UI execute in-process inside the Next.js dev server. Closing the terminal or a hot-reload will kill an in-progress run; that's fine for local iteration but means this pattern is dev-only. Deploying to Vercel would need a queue (Vercel Queues / Workflow DevKit).
 
@@ -310,19 +327,22 @@ gh api repos/buildwithtalia/ai-harness/dispatches \
 
 ## Continuous integration
 
-Two GitHub Actions workflows live under `.github/workflows/`:
+Three GitHub Actions workflows live under `.github/workflows/`:
 
 - **`eval-nightly.yml`** — runs `pnpm eval agent-benchmark` at 07:00 UTC daily on `main` (also `workflow_dispatch`). Uploads `runs/<id>/` as a 30-day artifact, then invokes `scripts/check-regression.mjs`, which compares the current run's mean pass rate against `results/nightly-baseline.json`. If the drop exceeds 5 percentage points, the script opens a `regression`-labeled issue. The baseline file is always updated to the latest run and committed back to `main` with `[skip ci]`.
 - **`pr-eval-smoke.yml`** — triggers on pull requests that touch `src/evals/**`. Runs the first 2 cases against `claude` and `claude+cg` only (no paid Devin/Cursor sessions on every push) via `pnpm eval agent-benchmark --limit=2 --models=claude,claude+cg`. Artifacts retained 7 days.
+- **`on-model-release.yml`** — the release-autopilot skill's entrypoint. Triggered via `workflow_dispatch` or `repository_dispatch` (`event_type: new-model-release`) with a `model` + `adapter` + `releaseUrl` payload. Applies the model change via `scripts/apply-model-update.mjs`, runs the eval, uploads artifacts, and commits the adapter bump on success. See *Release-autopilot skill handshake* above for the full contract.
 
 Required repo secrets (Settings → Secrets and variables → Actions):
 
 | Secret | Used by |
 |---|---|
-| `AI_GATEWAY_API_KEY` | nightly + PR smoke |
-| `DEVIN_API_KEY` | nightly |
-| `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | nightly |
-| `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | nightly + PR smoke (only if `+cg` targets should run; unset ⇒ `+cg` cases error and the rest still run) |
+| `AI_GATEWAY_API_KEY` | nightly + PR smoke + on-model-release |
+| `DEVIN_API_KEY` | nightly + on-model-release |
+| `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | nightly + on-model-release |
+| `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | nightly + PR smoke + on-model-release (only if `+cg` targets should run; unset ⇒ `+cg` cases error and the rest still run) |
+| `ORBIT_API_URL`, `ORBIT_API_KEY` | nightly + on-model-release (same conditional) |
+| `SKILL_WEBHOOK_URL`, `SKILL_WEBHOOK_TOKEN` | Optional — post-run notification to the release-autopilot skill |
 
 `GITHUB_TOKEN` is auto-provided; no manual issuance needed for opening the regression issue or committing the baseline.
 
@@ -362,36 +382,54 @@ Adding a third provider is one file + one line in `src/core/context-providers/in
 Two pieces of prior art the design pulls from:
 
 - **[APIFlow-Bench](https://blog.postman.com/apiflow-bench/)** (Postman, July 2026) — grade the result, not the answer string; decompose engineering work into named capability axes; frame each task failure-first (broken call + hint + ticket); tier by difficulty. Reflected here as `ticket`, `difficulty`, `capabilityAxis[]`, and per-category rubrics.
-- **[Local Code Graphs Are the Agent Context Layer](https://www.developersdigest.tech/blog/codegraph-local-indexes-ai-coding-agents)** (Developers Digest, May 2026) — "graph for navigation, file for truth." What to measure alongside a graph: tool calls before the first edit, file reads, staleness. Reflected here as `CaseResult.diagnostics` (`toolCallCount`, `stepCount`, `contextGraphLatencyMs`, `contextGraphDocumentCount`).
+- **[Local Code Graphs Are the Agent Context Layer](https://www.developersdigest.tech/blog/codegraph-local-indexes-ai-coding-agents)** (Developers Digest, May 2026) — "graph for navigation, file for truth." What to measure alongside a graph: tool calls before the first edit, file reads, staleness. Reflected here as `CaseResult.diagnostics` (`toolCallCount`, `stepCount`, `providerId`, `providerLatencyMs`, `providerDocumentCount`).
 
 ## Repo layout
 
 ```
-src/
-├── core/
-│   ├── agents/                 # Base agents (claude, codex, devin, cursor) +
-│   │                           # `withProvider(base, provider)` HOF that produces
-│   │                           # composed adapters like `claude+cg` / `claude+orbit`
-│   ├── context-providers/      # ContextProvider registry — one file per provider
-│   │   ├── types.ts            # ContextProvider interface + default formatter
-│   │   ├── context-graph.ts    # STUB — CONTEXT_GRAPH_API_URL / API_KEY
-│   │   ├── orbit.ts            # STUB — ORBIT_API_URL / API_KEY
-│   │   └── index.ts            # provider registry (`cg`, `orbit`)
-│   ├── scorers/                # exact, regex, LLM-judge, tool-trace, deterministic
-│   ├── artifacts.ts            # read/write runs/ directory
-│   ├── cost.ts                 # per-Mtok pricing table
-│   ├── providers.ts            # thin AI Gateway wrapper
-│   ├── runner.ts               # dispatches agents vs models, captures latency/usage
-│   └── types.ts                # EvalSuite, EvalCase, Scorer, CaseResult, RunManifest
-├── evals/
-│   ├── index.ts                # static suite registry
-│   └── agent-benchmark.ts      # 12 prompts × N targets, judged on 5 dimensions
-├── cli/
-│   └── run.ts                  # `pnpm eval <suite>`
-└── app/                        # Next.js dashboard
-    ├── page.tsx                # runs index
-    ├── new/                    # /new — start a run: pick agents × providers
-    ├── actions/start-run.ts    # server action
-    ├── runs/[id]/              # per-run detail + case drawer + auto-refresh
-    └── compare/                # metrics matrix + provider delta table + charts
+.
+├── .github/workflows/
+│   ├── eval-nightly.yml           # daily on main + regression issue + baseline commit
+│   ├── pr-eval-smoke.yml          # PR-scoped 2-case smoke on src/evals/**
+│   └── on-model-release.yml       # release-autopilot skill entrypoint
+├── data/
+│   └── prompt-overrides.json      # git-tracked overlay edited via /prompts
+├── results/
+│   ├── nightly-baseline.json      # nightly regression baseline (auto-committed)
+│   └── skill-input.json           # (gitignored) latest post-run summary for the skill
+├── scripts/
+│   ├── apply-model-update.mjs     # swaps MODEL constant or appends raw target
+│   └── check-regression.mjs       # diffs nightly aggregate vs baseline
+└── src/
+    ├── core/
+    │   ├── agents/                # Base agents (claude, codex, devin, cursor) +
+    │   │                          # `withProvider(base, provider)` HOF that produces
+    │   │                          # composed adapters like `claude+cg` / `claude+orbit`
+    │   ├── context-providers/     # ContextProvider registry — one file per provider
+    │   │   ├── types.ts           # ContextProvider interface + default formatter
+    │   │   ├── context-graph.ts   # STUB — CONTEXT_GRAPH_API_URL / API_KEY
+    │   │   ├── orbit.ts           # STUB — ORBIT_API_URL / API_KEY
+    │   │   └── index.ts           # provider registry (`cg`, `orbit`)
+    │   ├── scorers/               # deterministic + llmJudge + exact + regex + toolTrace
+    │   ├── artifacts.ts           # read/write runs/ directory
+    │   ├── cost.ts                # per-Mtok pricing table
+    │   ├── providers.ts           # thin AI Gateway wrapper
+    │   ├── runner.ts              # dispatches agents vs models; calls notifySkill at end
+    │   ├── skill-hook.ts          # writes results/skill-input.json + optional webhook POST
+    │   └── types.ts               # EvalSuite, EvalCase, Scorer, CaseResult, RunManifest
+    ├── evals/
+    │   ├── index.ts               # static suite registry
+    │   ├── overrides.ts           # reads data/prompt-overrides.json; merges into getSuite()
+    │   └── agent-benchmark.ts     # 12 prompts × N targets, judged on 5 dimensions
+    ├── cli/
+    │   └── run.ts                 # `pnpm eval <suite> [--models=…] [--limit=N]`
+    └── app/                       # Next.js dashboard
+        ├── page.tsx               # /  — runs index (status pill, New-run button)
+        ├── new/                   # /new — agents × providers selector + case-limit
+        ├── prompts/               # /prompts — per-case editor over the overlay JSON
+        ├── actions/
+        │   ├── start-run.ts       # kick off a run
+        │   └── edit-prompt.ts     # save/reset overlay entries
+        ├── runs/[id]/             # per-run detail + case drawer + auto-refresh
+        └── compare/               # metrics matrix + provider delta + charts
 ```
