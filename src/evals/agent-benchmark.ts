@@ -1,3 +1,5 @@
+import { z } from "zod"
+import { deterministic } from "@/core/scorers/deterministic"
 import { llmJudge } from "@/core/scorers/judge"
 import type { EvalSuite } from "@/core/types"
 
@@ -72,7 +74,10 @@ const suite: EvalSuite = {
     ask: ASK_RUBRIC,
   },
   judgeRubric: BUILD_RUBRIC, // fallback if category is missing
-  scorers: [llmJudge()],
+  // Both scorers run per case. The deterministic scorer returns score=null
+  // for cases without groundTruth (skipped from the aggregate); when present,
+  // it grades the result mechanically alongside the LLM judge's rubric score.
+  scorers: [deterministic(), llmJudge()],
   cases: [
     // ─── 1. Build a new feature ───────────────────────────────────────────
     {
@@ -83,8 +88,38 @@ const suite: EvalSuite = {
       ticket:
         "Ticket #4821. A caller is trying to PATCH a user with a new field and getting a 422:\n\n```\nPATCH /users/u_9f21\nContent-Type: application/json\n{\"preferred_language\": \"es\"}\n\n→ 422 Unprocessable Entity\n  {\"error\": \"unknown_field\", \"field\": \"preferred_language\"}\n```\n\nWe want to ship this field. It must persist, appear on GET /users/:id, be accepted on PATCH /users/:id, validate as ISO 639-1, and default to 'en' for existing rows.",
       input:
-        "Add `preferred_language` to the User API end-to-end. Include the migration, validation, tests, and docs updates. Reference specific files in the repo.",
+        "Add `preferred_language` to the User API end-to-end. Include the migration, validation, tests, and docs updates. Reference specific files in the repo. At the end of your answer, append a fenced ```json block matching: { field, iso: '639-1', default: 'en', touched: string[] (file paths), migration: { forward: string, rollback: string } }.",
       context: { repoUrl: REPO },
+      groundTruth: {
+        checks: [
+          {
+            type: "must-mention",
+            needles: ["preferred_language", "639", "'en'"],
+            description: "names the field, the ISO standard, and the default",
+          },
+          {
+            type: "regex",
+            regex: /\bmigrat(ion|e)\b/i,
+            description: "mentions a migration step",
+          },
+          {
+            type: "regex",
+            regex: /\brollback\b|\brevert\b|\bdown migration\b/i,
+            description: "spells out a rollback / reversal path",
+          },
+          {
+            type: "structured-output",
+            schema: z.object({
+              field: z.literal("preferred_language"),
+              iso: z.string(),
+              default: z.string().length(2),
+              touched: z.array(z.string()).min(1),
+              migration: z.object({ forward: z.string(), rollback: z.string() }),
+            }),
+            description: "ends with a JSON block matching the declared schema",
+          },
+        ],
+      },
     },
     {
       id: "build-02-add-service",
@@ -191,8 +226,40 @@ const suite: EvalSuite = {
       ticket:
         "Architecture review prep. We want to know which endpoints are load-bearing enough to require extra care during the auth migration.",
       input:
-        "Which endpoint in this codebase has the most dependencies (both callers and services it depends on)? Show the top 5 with a dependency count and the immediate call graph for #1.",
+        "Which endpoint in this codebase has the most dependencies (both callers and services it depends on)? Show the top 5 with a dependency count and the immediate call graph for #1. At the end of your answer, append a fenced ```json block matching: { top5: Array<{ endpoint: string (must start with '/'), callers: string[], callees: string[], dependencyCount: number }>, callGraphOfTop1: { endpoint: string, edges: Array<{ from: string, to: string }> } }.",
       context: { repoUrl: REPO },
+      groundTruth: {
+        checks: [
+          {
+            type: "structured-output",
+            schema: z.object({
+              top5: z
+                .array(
+                  z.object({
+                    endpoint: z.string().regex(/^\//),
+                    callers: z.array(z.string()),
+                    callees: z.array(z.string()),
+                    dependencyCount: z.number().int().nonnegative(),
+                  }),
+                )
+                .length(5),
+              callGraphOfTop1: z.object({
+                endpoint: z.string().regex(/^\//),
+                edges: z
+                  .array(z.object({ from: z.string(), to: z.string() }))
+                  .min(1),
+              }),
+            }),
+            description:
+              "final JSON has exactly 5 endpoints (ranked) + a non-empty call graph for #1",
+          },
+          {
+            type: "must-mention",
+            needles: ["/"],
+            description: "output contains at least one endpoint path",
+          },
+        ],
+      },
     },
     {
       id: "ask-03-docs-drift",
@@ -213,8 +280,59 @@ const suite: EvalSuite = {
       ticket:
         "Ticket #5140 (Security + Compliance). We're a healthcare platform. Legal is asking for a documented OWASP API Top 10 review before the SOC 2 audit window in 6 weeks.",
       input:
-        "Do a security review against the OWASP API Top 10. For each identified vulnerability: name the OWASP category, list the affected endpoints with file:line references, describe the exploit path, and identify which downstream systems (billing, EHR integrations, notifications, analytics) could be exposed if it were exercised.",
+        "Do a security review against the OWASP API Top 10. For each identified vulnerability: name the OWASP category, list the affected endpoints with file:line references, describe the exploit path, and identify which downstream systems (billing, EHR integrations, notifications, analytics) could be exposed if it were exercised. At the end of your answer, append a fenced ```json block matching: { findings: Array<{ owaspId: 'API1:2023'|'API2:2023'|'API3:2023'|'API4:2023'|'API5:2023'|'API6:2023'|'API7:2023'|'API8:2023'|'API9:2023'|'API10:2023', title: string, endpoints: Array<{ path: string, file: string, line: number }>, exploit: string, downstreamExposed: string[] }> }.",
       context: { repoUrl: REPO },
+      groundTruth: {
+        checks: [
+          {
+            type: "structured-output",
+            schema: z.object({
+              findings: z
+                .array(
+                  z.object({
+                    owaspId: z.enum([
+                      "API1:2023",
+                      "API2:2023",
+                      "API3:2023",
+                      "API4:2023",
+                      "API5:2023",
+                      "API6:2023",
+                      "API7:2023",
+                      "API8:2023",
+                      "API9:2023",
+                      "API10:2023",
+                    ]),
+                    title: z.string().min(3),
+                    endpoints: z
+                      .array(
+                        z.object({
+                          path: z.string().regex(/^\//),
+                          file: z.string().min(1),
+                          line: z.number().int().positive(),
+                        }),
+                      )
+                      .min(1),
+                    exploit: z.string().min(10),
+                    downstreamExposed: z.array(z.string()),
+                  }),
+                )
+                .min(3),
+            }),
+            description:
+              "final JSON has ≥3 findings, each with an OWASP id, endpoint file:line refs, exploit path, and downstream list",
+          },
+          {
+            type: "must-mention",
+            needles: ["OWASP"],
+            description: "output explicitly references OWASP",
+          },
+          {
+            type: "must-not-mention",
+            needles: ["I cannot", "I can't", "unable to review"],
+            description: "does not refuse the review",
+          },
+        ],
+      },
     },
   ],
 }

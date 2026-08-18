@@ -1,4 +1,5 @@
 import type { ModelMessage, ToolSet, LanguageModelUsage, StepResult } from "ai"
+import type { ZodType } from "zod"
 
 export type ModelId = string
 
@@ -38,6 +39,13 @@ export type EvalCase = {
   tools?: ToolSet
   expectedToolSequence?: string[]
   judgeRubric?: JudgeRubric
+  /**
+   * Deterministic ground-truth checks (APIFlow-Bench "grade the result").
+   * Runs via the `deterministic` scorer alongside any LLM judge. When absent,
+   * the deterministic scorer returns a null score and is skipped from the
+   * aggregate.
+   */
+  groundTruth?: GroundTruth
   context?: {
     text?: string
     repoPath?: string
@@ -65,9 +73,62 @@ export type Scorer = {
 }
 
 export type ScoreResult = {
-  score: number
+  /**
+   * 0..1 normalized score. `null` means this scorer is not applicable to
+   * the case (e.g. a deterministic scorer with no groundTruth defined) —
+   * the runner skips null values when aggregating.
+   */
+  score: number | null
   label?: string
   details?: unknown
+}
+
+/**
+ * Deterministic validator, APIFlow-Bench style: grade the result, not the
+ * answer string. Each check runs mechanically against the output text (or
+ * the extracted JSON structured-output block); the scorer returns the
+ * fraction that pass.
+ */
+export type GroundTruthCheck =
+  | {
+      type: "must-mention"
+      needles: string[]
+      caseSensitive?: boolean
+      description?: string
+    }
+  | {
+      type: "must-not-mention"
+      needles: string[]
+      caseSensitive?: boolean
+      description?: string
+    }
+  | {
+      type: "regex"
+      regex: RegExp
+      shouldMatch?: boolean
+      description?: string
+    }
+  | {
+      type: "structured-output"
+      schema: ZodType
+      description?: string
+    }
+  | {
+      type: "custom"
+      name: string
+      check: (
+        output: EvalOutput,
+        ec: EvalCase,
+      ) => Promise<CheckResult> | CheckResult
+    }
+
+export type CheckResult = {
+  pass: boolean
+  details?: unknown
+}
+
+export type GroundTruth = {
+  checks: GroundTruthCheck[]
 }
 
 export type EvalOutput = {

@@ -84,11 +84,14 @@ export function CaseDrawer({ result }: { result: CaseResult }) {
             <div className="space-y-2 text-xs">
               {Object.entries(result.scores).map(([name, s]) => {
                 const dims = extractDimensions(s.details)
+                const checks = extractChecks(s.details)
                 return (
                   <div key={name} className="space-y-1">
                     <div className="flex items-center gap-2">
                       <span className="font-mono">{name}</span>
-                      <span className="tabular-nums">{s.score.toFixed(3)}</span>
+                      <span className="tabular-nums">
+                        {s.score == null ? "n/a" : s.score.toFixed(3)}
+                      </span>
                       {s.label && <span className="text-muted-foreground">— {s.label}</span>}
                     </div>
                     {dims && (
@@ -100,6 +103,18 @@ export function CaseDrawer({ result }: { result: CaseResult }) {
                           </div>
                         ))}
                       </div>
+                    )}
+                    {checks && (
+                      <ol className="ml-4 space-y-0.5">
+                        {checks.map((c, i) => (
+                          <li key={i} className="flex items-start gap-2">
+                            <span className={c.pass ? "text-emerald-600" : "text-destructive"}>
+                              {c.pass ? "✓" : "✗"}
+                            </span>
+                            <span className="text-muted-foreground">{c.description}</span>
+                          </li>
+                        ))}
+                      </ol>
                     )}
                   </div>
                 )
@@ -167,6 +182,26 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   )
+}
+
+type CheckSummary = { pass: boolean; description: string; type?: string }
+
+function extractChecks(details: unknown): CheckSummary[] | null {
+  if (!details || typeof details !== "object") return null
+  const arr = (details as { checks?: unknown }).checks
+  if (!Array.isArray(arr)) return null
+  const out: CheckSummary[] = []
+  for (const c of arr) {
+    if (!c || typeof c !== "object") continue
+    const rec = c as Record<string, unknown>
+    if (typeof rec.pass !== "boolean") continue
+    out.push({
+      pass: rec.pass,
+      description: String(rec.description ?? rec.type ?? ""),
+      type: typeof rec.type === "string" ? rec.type : undefined,
+    })
+  }
+  return out.length ? out : null
 }
 
 function extractDimensions(details: unknown): Record<string, number | string> | null {

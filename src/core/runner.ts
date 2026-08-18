@@ -180,7 +180,9 @@ async function runOne(
       judgeRubric: rubric,
     })
   }
-  const scoreValues = Object.values(scores).map((s) => s.score)
+  const scoreValues = Object.values(scores)
+    .map((s) => s.score)
+    .filter((s): s is number => s != null)
   const aggregateScore = scoreValues.length
     ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length
     : 0
