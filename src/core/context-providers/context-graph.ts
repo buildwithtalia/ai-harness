@@ -5,8 +5,8 @@ import {
   type ContextResult,
 } from "./types"
 
-const ENV_URL = "CONTEXT_GRAPH_API_URL"
-const ENV_KEY = "CONTEXT_GRAPH_API_KEY"
+const ENV_URL = "POSTMAN_CONTEXT_GRAPH_API_URL"
+const ENV_KEY = "POSTMAN_CONTEXT_GRAPH_API_KEY"
 
 export const contextGraphProvider: ContextProvider = {
   id: "cg",

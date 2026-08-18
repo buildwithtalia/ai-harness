@@ -253,7 +253,7 @@ The runner extracts `meta.provider` into `CaseResult.diagnostics.{providerId, pr
 
 Both currently stubs — they read their own env vars, POST `{ prompt, repoUrl, repoPath }`, and expect `{ summary, documents[] }`. Wiring stays constant; only the fetch call changes when each API contract is finalised.
 
-- **`cg` — Context Graph** (`src/core/context-providers/context-graph.ts`). Env: `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY`.
+- **`cg` — Context Graph** (`src/core/context-providers/context-graph.ts`). Env: `POSTMAN_CONTEXT_GRAPH_API_URL`, `POSTMAN_CONTEXT_GRAPH_API_KEY` (names match the release-autopilot skill in `Postman-Devrel/devrel-claude-code-skills` PR #3).
 - **`orbit` — Orbit** (`src/core/context-providers/orbit.ts`). Env: `ORBIT_API_URL`, `ORBIT_API_KEY`.
 
 ### Adding a new provider
@@ -651,7 +651,7 @@ Three GitHub Actions workflows live under `.github/workflows/`.
 | `AI_GATEWAY_API_KEY` | `claude`, `codex`, and any raw model target through the AI Gateway |
 | `DEVIN_API_KEY` | `devin` |
 | `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | `cursor` |
-| `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | any `+cg` composed target |
+| `POSTMAN_CONTEXT_GRAPH_API_URL`, `POSTMAN_CONTEXT_GRAPH_API_KEY` | any `+cg` composed target |
 | `ORBIT_API_URL`, `ORBIT_API_KEY` | any `+orbit` composed target |
 | `SKILL_WEBHOOK_URL`, `SKILL_WEBHOOK_TOKEN` | optional — POST completed runs to the release-autopilot skill |
 
@@ -744,7 +744,7 @@ Adding a third provider is one file + one line in `src/core/context-providers/in
     │   │   └── index.ts            # registry, lazy resolution, listBaseAgentIds
     │   ├── context-providers/
     │   │   ├── types.ts            # ContextProvider interface + default formatter
-    │   │   ├── context-graph.ts    # STUB — CONTEXT_GRAPH_API_URL / API_KEY
+    │   │   ├── context-graph.ts    # STUB — POSTMAN_CONTEXT_GRAPH_API_URL / API_KEY
     │   │   ├── orbit.ts            # STUB — ORBIT_API_URL / API_KEY
     │   │   └── index.ts            # provider registry (`cg`, `orbit`)
     │   ├── scorers/

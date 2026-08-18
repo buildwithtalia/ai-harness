@@ -18,8 +18,8 @@ jobs:
       # Smoke run only exercises the AI-Gateway-backed adapters (claude, codex)
       # to keep PR cost low and avoid paid Devin/Cursor credits on every push.
       AI_GATEWAY_API_KEY:      ${{ secrets.AI_GATEWAY_API_KEY }}
-      CONTEXT_GRAPH_API_URL:   ${{ secrets.CONTEXT_GRAPH_API_URL }}
-      CONTEXT_GRAPH_API_KEY:   ${{ secrets.CONTEXT_GRAPH_API_KEY }}
+      POSTMAN_CONTEXT_GRAPH_API_URL: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_URL }}
+      POSTMAN_CONTEXT_GRAPH_API_KEY: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

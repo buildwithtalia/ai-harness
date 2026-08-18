@@ -45,8 +45,8 @@ jobs:
       DEVIN_API_KEY:            ${{ secrets.DEVIN_API_KEY }}
       CURSOR_API_KEY:           ${{ secrets.CURSOR_API_KEY }}
       CURSOR_REPOSITORY:        ${{ secrets.CURSOR_REPOSITORY }}
-      CONTEXT_GRAPH_API_URL:    ${{ secrets.CONTEXT_GRAPH_API_URL }}
-      CONTEXT_GRAPH_API_KEY:    ${{ secrets.CONTEXT_GRAPH_API_KEY }}
+      POSTMAN_CONTEXT_GRAPH_API_URL: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_URL }}
+      POSTMAN_CONTEXT_GRAPH_API_KEY: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_KEY }}
       ORBIT_API_URL:            ${{ secrets.ORBIT_API_URL }}
       ORBIT_API_KEY:            ${{ secrets.ORBIT_API_KEY }}
       SKILL_WEBHOOK_URL:        ${{ secrets.SKILL_WEBHOOK_URL }}
