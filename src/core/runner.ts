@@ -69,6 +69,41 @@ function firstUserText(input: EvalCase["input"]): string {
     .join("\n")
 }
 
+function promptWithTicket(ec: EvalCase): string {
+  const base = firstUserText(ec.input)
+  if (!ec.ticket) return base
+  return `${ec.ticket}\n\n---\n\n${base}`
+}
+
+function messagesWithTicket(ec: EvalCase): ModelMessage[] {
+  if (!ec.ticket) return toMessages(ec.input)
+  if (typeof ec.input === "string") {
+    return [{ role: "user", content: promptWithTicket(ec) }]
+  }
+  return [{ role: "user", content: ec.ticket }, ...ec.input]
+}
+
+function resolveRubric(suite: EvalSuite, ec: EvalCase) {
+  if (ec.judgeRubric) return ec.judgeRubric
+  const category = ec.metadata?.category as string | undefined
+  if (category && suite.rubricsByCategory?.[category]) {
+    return suite.rubricsByCategory[category]
+  }
+  return suite.judgeRubric
+}
+
+function extractContextGraphMeta(meta: Record<string, unknown> | undefined) {
+  if (!meta) return {}
+  const cg = meta["contextGraph"] as
+    | { latencyMs?: number; documentCount?: number }
+    | undefined
+  if (!cg) return {}
+  return {
+    contextGraphLatencyMs: cg.latencyMs,
+    contextGraphDocumentCount: cg.documentCount,
+  }
+}
+
 async function invokeAsAgent(
   suite: EvalSuite,
   agentId: string,
@@ -76,7 +111,7 @@ async function invokeAsAgent(
 ): Promise<{ output: EvalOutput; latencyMs: number }> {
   const adapter = getAgent(agentId as Parameters<typeof getAgent>[0])
   const agentCtx: AgentContext = {
-    prompt: firstUserText(ec.input),
+    prompt: promptWithTicket(ec),
     system: suite.system,
     contextText: ec.context?.text,
     contextRepoPath: ec.context?.repoPath,
@@ -98,6 +133,7 @@ async function invokeAsAgent(
       steps: [],
       finishReason: (out.meta?.finishReason as string) ?? "stop",
       usage,
+      meta: out.meta,
     },
   }
 }
@@ -115,7 +151,7 @@ async function runOne(
     latencyMs = r.latencyMs
     output = r.output
   } else {
-    const messages = toMessages(ec.input)
+    const messages = messagesWithTicket(ec)
     const start = performance.now()
     const result = await generateText({
       model: getModel(target),
@@ -134,13 +170,14 @@ async function runOne(
     }
   }
 
+  const rubric = resolveRubric(suite, ec)
   const scores: Record<string, ScoreResult> = {}
   for (const scorer of suite.scorers) {
     scores[scorer.name] = await scorer.run({
       case: ec,
       output,
       judgeModel: suite.judgeModel,
-      judgeRubric: ec.judgeRubric ?? suite.judgeRubric,
+      judgeRubric: rubric,
     })
   }
   const scoreValues = Object.values(scores).map((s) => s.score)
@@ -149,9 +186,18 @@ async function runOne(
     : 0
   const passed = aggregateScore >= 0.5
 
+  const diagnostics: CaseResult["diagnostics"] = {
+    toolCallCount: output.toolCalls.length,
+    stepCount: output.steps.length,
+    ...extractContextGraphMeta(output.meta),
+  }
+
   return {
     caseId: ec.id,
     model: target,
+    category: (ec.metadata?.category as string | undefined) ?? undefined,
+    difficulty: ec.difficulty,
+    capabilityAxis: ec.capabilityAxis,
     latencyMs,
     usage: output.usage,
     costUsd: estimateCostUsd(target, output.usage),
@@ -159,6 +205,7 @@ async function runOne(
     scores,
     aggregateScore,
     passed,
+    diagnostics,
   }
 }
 

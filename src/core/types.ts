@@ -4,9 +4,36 @@ export type ModelId = string
 
 export type EvalCaseInput = string | ModelMessage[]
 
+export type Difficulty = "easy" | "medium" | "hard"
+
+// Named after APIFlow-Bench's seven engineering-failure axes, extended with
+// three axes ("impact_analysis", "docs_alignment", "security_review") that
+// cover the find/ask prompts in this suite. Free-form strings are also
+// accepted so suites can add their own without a type change.
+export type CapabilityAxis =
+  | "authentication"
+  | "discovery"
+  | "schema_repair"
+  | "multistep"
+  | "error_recovery"
+  | "pagination"
+  | "statefulness"
+  | "impact_analysis"
+  | "docs_alignment"
+  | "security_review"
+  | (string & {})
+
 export type EvalCase = {
   id: string
   input: EvalCaseInput
+  /**
+   * Optional failure-first framing block (APIFlow-Bench style). When set,
+   * the runner prepends it to the prompt so the case reads like a real dev
+   * ticket: broken call inline + error hint + ask.
+   */
+  ticket?: string
+  difficulty?: Difficulty
+  capabilityAxis?: CapabilityAxis[]
   expected?: string | RegExp
   tools?: ToolSet
   expectedToolSequence?: string[]
@@ -49,6 +76,8 @@ export type EvalOutput = {
   steps: StepResult<ToolSet>[]
   finishReason: string
   usage: LanguageModelUsage
+  /** Free-form adapter metadata (e.g. session URL for Devin, contextGraph stats for +cg). */
+  meta?: Record<string, unknown>
 }
 
 export type EvalSuite = {
@@ -59,13 +88,36 @@ export type EvalSuite = {
   scorers: Scorer[]
   judgeModel?: ModelId
   judgeRubric?: JudgeRubric
+  /**
+   * Category-specific rubric override. Runner resolves in this order:
+   * case.judgeRubric → rubricsByCategory[case.metadata.category] → suite.judgeRubric.
+   * Category is read from case.metadata.category (see agent-benchmark for build/find/ask).
+   */
+  rubricsByCategory?: Record<string, JudgeRubric>
   maxSteps?: number
   system?: string
+}
+
+/**
+ * CodeGraph-style orientation metrics (see the "Local Code Graphs Are the Agent
+ * Context Layer" article). Captured per case so we can compare base vs +cg on
+ * navigation cost, not just answer quality.
+ */
+export type CaseDiagnostics = {
+  toolCallCount: number
+  stepCount: number
+  /** ms spent inside the Context Graph lookup (only present for +cg targets). */
+  contextGraphLatencyMs?: number
+  /** Number of documents returned by the Context Graph (only present for +cg targets). */
+  contextGraphDocumentCount?: number
 }
 
 export type CaseResult = {
   caseId: string
   model: ModelId
+  category?: string
+  difficulty?: Difficulty
+  capabilityAxis?: CapabilityAxis[]
   latencyMs: number
   usage: LanguageModelUsage
   costUsd: number
@@ -73,6 +125,7 @@ export type CaseResult = {
   scores: Record<string, ScoreResult>
   aggregateScore: number
   passed: boolean
+  diagnostics?: CaseDiagnostics
   error?: { message: string; stack?: string }
 }
 

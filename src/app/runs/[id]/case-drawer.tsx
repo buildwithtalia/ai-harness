@@ -27,6 +27,29 @@ export function CaseDrawer({ result }: { result: CaseResult }) {
         </SheetHeader>
 
         <div className="px-4 pb-8 space-y-5 text-sm">
+          {(result.category || result.difficulty || result.capabilityAxis?.length) && (
+            <div className="flex flex-wrap gap-1.5 text-xs">
+              {result.category && (
+                <span className="inline-flex items-center rounded border px-1.5 py-0.5 font-mono">
+                  {result.category}
+                </span>
+              )}
+              {result.difficulty && (
+                <span className="inline-flex items-center rounded border px-1.5 py-0.5 font-mono">
+                  {result.difficulty}
+                </span>
+              )}
+              {result.capabilityAxis?.map((a) => (
+                <span
+                  key={a}
+                  className="inline-flex items-center rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground"
+                >
+                  {a}
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="grid grid-cols-3 gap-3 text-xs">
             <Stat label="score" value={result.aggregateScore.toFixed(3)} />
             <Stat label="latency" value={`${result.latencyMs} ms`} />
@@ -36,15 +59,51 @@ export function CaseDrawer({ result }: { result: CaseResult }) {
             <Stat label="finish" value={result.output.finishReason} />
           </div>
 
+          {result.diagnostics && (
+            <Section title="Diagnostics">
+              <div className="grid grid-cols-3 gap-3 text-xs">
+                <Stat label="tool calls" value={String(result.diagnostics.toolCallCount)} />
+                <Stat label="steps" value={String(result.diagnostics.stepCount)} />
+                {result.diagnostics.contextGraphLatencyMs != null && (
+                  <Stat
+                    label="cg latency"
+                    value={`${result.diagnostics.contextGraphLatencyMs} ms`}
+                  />
+                )}
+                {result.diagnostics.contextGraphDocumentCount != null && (
+                  <Stat
+                    label="cg docs"
+                    value={String(result.diagnostics.contextGraphDocumentCount)}
+                  />
+                )}
+              </div>
+            </Section>
+          )}
+
           <Section title="Scores">
-            <div className="space-y-1.5">
-              {Object.entries(result.scores).map(([name, s]) => (
-                <div key={name} className="flex items-center gap-2 text-xs">
-                  <span className="font-mono">{name}</span>
-                  <span className="tabular-nums">{s.score.toFixed(3)}</span>
-                  {s.label && <span className="text-muted-foreground">— {s.label}</span>}
-                </div>
-              ))}
+            <div className="space-y-2 text-xs">
+              {Object.entries(result.scores).map(([name, s]) => {
+                const dims = extractDimensions(s.details)
+                return (
+                  <div key={name} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono">{name}</span>
+                      <span className="tabular-nums">{s.score.toFixed(3)}</span>
+                      {s.label && <span className="text-muted-foreground">— {s.label}</span>}
+                    </div>
+                    {dims && (
+                      <div className="ml-4 grid grid-cols-2 gap-x-4 gap-y-0.5">
+                        {Object.entries(dims).map(([dim, v]) => (
+                          <div key={dim} className="flex items-center gap-2">
+                            <span className="text-muted-foreground">{dim}</span>
+                            <span className="tabular-nums">{typeof v === "number" ? v : String(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </Section>
 
@@ -108,4 +167,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       {children}
     </div>
   )
+}
+
+function extractDimensions(details: unknown): Record<string, number | string> | null {
+  if (!details || typeof details !== "object") return null
+  const d = (details as { dimensions?: unknown }).dimensions
+  if (!d || typeof d !== "object") return null
+  const out: Record<string, number | string> = {}
+  for (const [k, v] of Object.entries(d as Record<string, unknown>)) {
+    if (typeof v === "number" || typeof v === "string") out[k] = v
+  }
+  return Object.keys(out).length ? out : null
 }
