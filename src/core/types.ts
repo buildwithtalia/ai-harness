@@ -161,16 +161,18 @@ export type EvalSuite = {
 
 /**
  * CodeGraph-style orientation metrics (see the "Local Code Graphs Are the Agent
- * Context Layer" article). Captured per case so we can compare base vs +cg on
- * navigation cost, not just answer quality.
+ * Context Layer" article). Captured per case so we can compare base vs a
+ * context-provider variant on navigation cost, not just answer quality.
  */
 export type CaseDiagnostics = {
   toolCallCount: number
   stepCount: number
-  /** ms spent inside the Context Graph lookup (only present for +cg targets). */
-  contextGraphLatencyMs?: number
-  /** Number of documents returned by the Context Graph (only present for +cg targets). */
-  contextGraphDocumentCount?: number
+  /** The context-provider slug (e.g. "cg", "orbit"), only present for composed targets. */
+  providerId?: string
+  /** ms spent inside the context-provider lookup, only present for composed targets. */
+  providerLatencyMs?: number
+  /** Number of documents returned by the context provider, only present for composed targets. */
+  providerDocumentCount?: number
 }
 
 export type CaseResult = {

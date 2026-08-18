@@ -1,6 +1,11 @@
 export type BaseAgentId = "claude" | "devin" | "cursor" | "codex"
-export type CgAgentId = `${BaseAgentId}+cg`
-export type AgentId = BaseAgentId | CgAgentId
+/**
+ * Composed agent id: `<base>+<providerId>` where the provider comes from
+ * src/core/context-providers/. The provider slug is open-ended so we don't
+ * enumerate every combo in the type.
+ */
+export type ComposedAgentId = `${BaseAgentId}+${string}`
+export type AgentId = BaseAgentId | ComposedAgentId
 
 export type AgentContext = {
   prompt: string

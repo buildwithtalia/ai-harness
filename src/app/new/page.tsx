@@ -1,4 +1,6 @@
 import { listSuiteNames, getSuite } from "@/evals"
+import { baseAgents } from "@/core/agents"
+import { listProviders } from "@/core/context-providers"
 import { NewRunForm } from "./new-run-form"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
@@ -19,18 +21,25 @@ export default async function NewRunPage(props: PageProps<"/new">) {
     return {
       name,
       description: s.description ?? "",
-      models: s.models,
       caseCount: s.cases.length,
     }
   })
+
+  const agents = baseAgents.map((a) => ({ id: a.id, displayName: a.displayName }))
+  const providers = listProviders().map((p) => ({
+    id: p.id,
+    displayName: p.displayName,
+    configured: p.isConfigured(),
+  }))
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10 space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">New run</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Pick a suite and targets, then start it. The run happens on this dev server; you'll be
-          redirected to the run page as soon as it starts and it will refresh as cases complete.
+          Pick a suite, choose which agents to run, and pick which context providers to compare
+          them against. Every selected agent runs once as a baseline (if the box is checked) and
+          once per selected provider.
         </p>
       </div>
 
@@ -46,7 +55,12 @@ export default async function NewRunPage(props: PageProps<"/new">) {
       ) : (
         <Card>
           <CardContent className="pt-6">
-            <NewRunForm suites={suites} preselect={preselect} />
+            <NewRunForm
+              suites={suites}
+              agents={agents}
+              providers={providers}
+              preselect={preselect}
+            />
           </CardContent>
         </Card>
       )}

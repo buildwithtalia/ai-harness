@@ -92,15 +92,16 @@ function resolveRubric(suite: EvalSuite, ec: EvalCase) {
   return suite.judgeRubric
 }
 
-function extractContextGraphMeta(meta: Record<string, unknown> | undefined) {
+function extractProviderMeta(meta: Record<string, unknown> | undefined) {
   if (!meta) return {}
-  const cg = meta["contextGraph"] as
-    | { latencyMs?: number; documentCount?: number }
+  const p = meta["provider"] as
+    | { id?: string; latencyMs?: number; documentCount?: number }
     | undefined
-  if (!cg) return {}
+  if (!p) return {}
   return {
-    contextGraphLatencyMs: cg.latencyMs,
-    contextGraphDocumentCount: cg.documentCount,
+    providerId: p.id,
+    providerLatencyMs: p.latencyMs,
+    providerDocumentCount: p.documentCount,
   }
 }
 
@@ -191,7 +192,7 @@ async function runOne(
   const diagnostics: CaseResult["diagnostics"] = {
     toolCallCount: output.toolCalls.length,
     stepCount: output.steps.length,
-    ...extractContextGraphMeta(output.meta),
+    ...extractProviderMeta(output.meta),
   }
 
   return {

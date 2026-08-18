@@ -57,15 +57,23 @@ const suite: EvalSuite = {
     "Compare each coding agent (claude, devin, cursor, codex) with and without the Context Graph on realistic build / find-issue / ask tickets against a fixture healthcare-infra repo. Prompts are framed APIFlow-Bench-style (failure-first, ticket-shaped), tagged with capability axes + difficulty, and scored by category-specific 5-dimension rubrics.",
   system:
     "You are a senior software engineer. Read the ticket. Ground every proposal in the referenced repo — cite file paths, endpoints, and function names. Enumerate assumptions, dependencies, and risks explicitly. If you cannot access the repo directly, say what you would inspect and why. Use numbered steps. Never invent files that could not plausibly exist in the repo.",
+  // Default target list. The /new form lets you pick a different set at run
+  // time (base agents × context providers); this list is what runs when
+  // nothing is overridden. Includes each of the 4 base agents paired with
+  // each registered context provider (cg, orbit) plus the bare baseline.
   models: [
     "claude",
     "claude+cg",
+    "claude+orbit",
     "devin",
     "devin+cg",
+    "devin+orbit",
     "cursor",
     "cursor+cg",
+    "cursor+orbit",
     "codex",
     "codex+cg",
+    "codex+orbit",
   ],
   judgeModel: "anthropic/claude-opus-4-7",
   rubricsByCategory: {

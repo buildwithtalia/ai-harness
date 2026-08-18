@@ -7,8 +7,8 @@ type Category = (typeof CATEGORIES)[number]
 
 export type MatrixRow = {
   target: string
-  isCg: boolean
   agent: string
+  providerId: string | null
   passRate: number
   meanScore: number
   costUsd: number
@@ -104,9 +104,10 @@ const COLUMNS: ColumnDef[] = [
   },
 ]
 
-function agentOf(target: string): { agent: string; isCg: boolean } {
-  const isCg = target.endsWith("+cg")
-  return { agent: isCg ? target.slice(0, -"+cg".length) : target, isCg }
+function agentOf(target: string): { agent: string; providerId: string | null } {
+  const plus = target.indexOf("+")
+  if (plus === -1) return { agent: target, providerId: null }
+  return { agent: target.slice(0, plus), providerId: target.slice(plus + 1) }
 }
 
 function mean(nums: number[]): number {
@@ -121,18 +122,18 @@ export function buildMatrixRows(
   const perModelAgg = manifest.aggregate.perModel
   const rows: MatrixRow[] = []
   for (const target of manifest.models) {
-    const { agent, isCg } = agentOf(target)
+    const { agent, providerId } = agentOf(target)
     const forTarget = cases.filter((c) => c.model === target)
     const perCategory: MatrixRow["perCategory"] = {}
     for (const cat of CATEGORIES) {
-      const inCat = forTarget.filter((c) => (c.category ?? c.category) === cat)
+      const inCat = forTarget.filter((c) => c.category === cat)
       if (inCat.length) perCategory[cat] = mean(inCat.map((c) => c.aggregateScore))
     }
     const agg = perModelAgg[target]
     rows.push({
       target,
       agent,
-      isCg,
+      providerId,
       passRate: agg?.passRate ?? 0,
       meanScore: agg?.meanScore ?? 0,
       costUsd: agg?.totalCostUsd ?? 0,
@@ -143,10 +144,13 @@ export function buildMatrixRows(
       perCategory,
     })
   }
-  // Group base + +cg together in output order.
+  // Group base + composed variants together in output order (base first, then
+  // providers alphabetically).
   rows.sort((a, b) => {
     if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
-    return Number(a.isCg) - Number(b.isCg)
+    if (a.providerId == null) return -1
+    if (b.providerId == null) return 1
+    return a.providerId.localeCompare(b.providerId)
   })
   return rows
 }
@@ -194,9 +198,9 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
                   <TableRow key={r.target} className={isNewAgent ? "border-t-2" : undefined}>
                     <TableCell className="font-mono text-xs">
                       {r.target}
-                      {r.isCg && (
+                      {r.providerId && (
                         <span className="ml-1.5 rounded bg-primary/10 px-1 py-0.5 text-[10px] text-primary">
-                          +cg
+                          +{r.providerId}
                         </span>
                       )}
                     </TableCell>
@@ -229,19 +233,29 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
 
 type DeltaRow = {
   agent: string
-  base: MatrixRow | null
-  cg: MatrixRow | null
+  providerId: string
+  base: MatrixRow
+  composed: MatrixRow
 }
 
-function pairByAgent(rows: MatrixRow[]): DeltaRow[] {
-  const byAgent = new Map<string, DeltaRow>()
+function pairsByProvider(rows: MatrixRow[]): DeltaRow[] {
+  const bases = new Map<string, MatrixRow>()
   for (const r of rows) {
-    if (!byAgent.has(r.agent)) byAgent.set(r.agent, { agent: r.agent, base: null, cg: null })
-    const entry = byAgent.get(r.agent)!
-    if (r.isCg) entry.cg = r
-    else entry.base = r
+    if (r.providerId == null) bases.set(r.agent, r)
   }
-  return Array.from(byAgent.values()).filter((d) => d.base && d.cg)
+  const out: DeltaRow[] = []
+  for (const r of rows) {
+    if (r.providerId == null) continue
+    const base = bases.get(r.agent)
+    if (!base) continue
+    out.push({ agent: r.agent, providerId: r.providerId, base, composed: r })
+  }
+  // Sort by agent, then by provider id, so rows group by agent.
+  out.sort((a, b) => {
+    if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
+    return a.providerId.localeCompare(b.providerId)
+  })
+  return out
 }
 
 function deltaCell(
@@ -262,16 +276,17 @@ function deltaCell(
   }
 }
 
-export function ContextGraphDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
-  const pairs = pairByAgent(rows)
+export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
+  const pairs = pairsByProvider(rows)
   if (!pairs.length) return null
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Context Graph delta</CardTitle>
+        <CardTitle>Context-provider delta</CardTitle>
         <CardDescription>
-          Per-agent, <code className="text-xs">+cg</code> minus base. Green = the graph moved the
-          metric in the desired direction; red = it moved against it.
+          One row per <span className="font-mono">(agent, provider)</span> — value is{" "}
+          <code className="text-xs">+&lt;provider&gt;</code> minus baseline. Green = the provider
+          moved the metric in the desired direction; red = it moved against it.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -280,6 +295,7 @@ export function ContextGraphDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
             <TableHeader>
               <TableRow>
                 <TableHead className="min-w-[7rem]">Agent</TableHead>
+                <TableHead className="min-w-[5rem]">Provider</TableHead>
                 {COLUMNS.map((c) => (
                   <TableHead key={c.key} className="text-right font-medium">
                     Δ {c.label}
@@ -288,33 +304,40 @@ export function ContextGraphDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pairs.map((p) => (
-                <TableRow key={p.agent}>
-                  <TableCell className="font-mono text-xs">{p.agent}</TableCell>
-                  {COLUMNS.map((c) => {
-                    const d = deltaCell(
-                      p.base ? c.get(p.base) : undefined,
-                      p.cg ? c.get(p.cg) : undefined,
-                      c.goal,
-                      c.format,
-                    )
-                    const cls =
-                      d.kind === "positive"
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : d.kind === "negative"
-                          ? "text-destructive"
-                          : "text-muted-foreground"
-                    return (
-                      <TableCell
-                        key={c.key}
-                        className={`text-right tabular-nums ${cls}`}
-                      >
-                        {d.text}
-                      </TableCell>
-                    )
-                  })}
-                </TableRow>
-              ))}
+              {pairs.map((p, i) => {
+                const isNewAgent = i > 0 && pairs[i - 1].agent !== p.agent
+                return (
+                  <TableRow
+                    key={`${p.agent}+${p.providerId}`}
+                    className={isNewAgent ? "border-t-2" : undefined}
+                  >
+                    <TableCell className="font-mono text-xs">{p.agent}</TableCell>
+                    <TableCell className="font-mono text-xs">+{p.providerId}</TableCell>
+                    {COLUMNS.map((c) => {
+                      const d = deltaCell(
+                        c.get(p.base),
+                        c.get(p.composed),
+                        c.goal,
+                        c.format,
+                      )
+                      const cls =
+                        d.kind === "positive"
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : d.kind === "negative"
+                            ? "text-destructive"
+                            : "text-muted-foreground"
+                      return (
+                        <TableCell
+                          key={c.key}
+                          className={`text-right tabular-nums ${cls}`}
+                        >
+                          {d.text}
+                        </TableCell>
+                      )
+                    })}
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </div>

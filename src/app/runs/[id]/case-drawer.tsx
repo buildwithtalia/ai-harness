@@ -64,16 +64,19 @@ export function CaseDrawer({ result }: { result: CaseResult }) {
               <div className="grid grid-cols-3 gap-3 text-xs">
                 <Stat label="tool calls" value={String(result.diagnostics.toolCallCount)} />
                 <Stat label="steps" value={String(result.diagnostics.stepCount)} />
-                {result.diagnostics.contextGraphLatencyMs != null && (
+                {result.diagnostics.providerId && (
+                  <Stat label="provider" value={result.diagnostics.providerId} />
+                )}
+                {result.diagnostics.providerLatencyMs != null && (
                   <Stat
-                    label="cg latency"
-                    value={`${result.diagnostics.contextGraphLatencyMs} ms`}
+                    label="provider latency"
+                    value={`${result.diagnostics.providerLatencyMs} ms`}
                   />
                 )}
-                {result.diagnostics.contextGraphDocumentCount != null && (
+                {result.diagnostics.providerDocumentCount != null && (
                   <Stat
-                    label="cg docs"
-                    value={String(result.diagnostics.contextGraphDocumentCount)}
+                    label="provider docs"
+                    value={String(result.diagnostics.providerDocumentCount)}
                   />
                 )}
               </div>
