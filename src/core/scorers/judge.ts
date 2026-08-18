@@ -1,32 +1,46 @@
 import { generateObject } from "ai"
 import { gateway } from "ai"
+import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { z } from "zod"
 import type { Scorer } from "../types"
 
 /**
  * The LLM judge picks a model based on what env is configured:
- *   1. Explicit `opts.judgeModel` or suite-level `judgeModel` wins.
- *   2. If AI_GATEWAY_API_KEY is set, use `anthropic/claude-opus-4-7` via the
- *      gateway (highest-quality default).
- *   3. Else if CODEX_API_KEY (an OpenAI key) is set, use `gpt-5` via OpenAI
- *      direct.
- *   4. Else return null so the runner skips the judge — deterministic scorers
- *      still run.
+ *   1. Explicit `opts.judgeModel` or suite-level `judgeModel` — routed to
+ *      the matching direct provider if set, else via the gateway.
+ *   2. Else prefer Anthropic direct (CLAUDE_API_KEY) → claude-opus-4-7.
+ *   3. Else AI_GATEWAY_API_KEY → anthropic/claude-opus-4-7 via gateway.
+ *   4. Else CODEX_API_KEY (an OpenAI key) → gpt-5 via OpenAI direct.
+ *   5. Else return null so the runner skips the judge — deterministic
+ *      scorers still run.
  */
 
+const ANTHROPIC_DEFAULT = "claude-opus-4-7"
 const GATEWAY_DEFAULT = "anthropic/claude-opus-4-7"
 const OPENAI_DEFAULT = "gpt-5"
 
-function pickJudgeModel(explicit?: string): { transport: "gateway" | "openai" | "none"; model: string } {
+type Picked =
+  | { transport: "anthropic"; model: string }
+  | { transport: "gateway"; model: string }
+  | { transport: "openai"; model: string }
+  | { transport: "none"; model: "" }
+
+function pickJudgeModel(explicit?: string): Picked {
   if (explicit) {
-    if (explicit.startsWith("openai/")) {
-      if (process.env.CODEX_API_KEY) return { transport: "openai", model: explicit.slice("openai/".length) }
+    if (explicit.startsWith("anthropic/")) {
+      const bare = explicit.slice("anthropic/".length)
+      if (process.env.CLAUDE_API_KEY) return { transport: "anthropic", model: bare }
+      if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: explicit }
+    } else if (explicit.startsWith("openai/")) {
+      const bare = explicit.slice("openai/".length)
+      if (process.env.CODEX_API_KEY) return { transport: "openai", model: bare }
       if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: explicit }
     } else if (process.env.AI_GATEWAY_API_KEY) {
       return { transport: "gateway", model: explicit }
     }
   }
+  if (process.env.CLAUDE_API_KEY) return { transport: "anthropic", model: ANTHROPIC_DEFAULT }
   if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: GATEWAY_DEFAULT }
   if (process.env.CODEX_API_KEY) return { transport: "openai", model: OPENAI_DEFAULT }
   return { transport: "none", model: "" }
@@ -48,7 +62,9 @@ export function llmJudge(opts?: { judgeModel?: string }): Scorer {
       const model =
         picked.transport === "gateway"
           ? gateway(picked.model)
-          : createOpenAI({ apiKey: process.env.CODEX_API_KEY! })(picked.model)
+          : picked.transport === "anthropic"
+            ? createAnthropic({ apiKey: process.env.CLAUDE_API_KEY! })(picked.model)
+            : createOpenAI({ apiKey: process.env.CODEX_API_KEY! })(picked.model)
 
       const dimensionSchema = z
         .object(

@@ -11,6 +11,7 @@
     "eval:list": "tsx --tsconfig tsconfig.json src/cli/run.ts --list"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.39",
     "@ai-sdk/openai": "^4.0.42",
     "ai": "^7.0.66",
     "class-variance-authority": "^0.7.1",
