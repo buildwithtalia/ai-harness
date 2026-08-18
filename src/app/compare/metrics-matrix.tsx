@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { parseTargetId } from "@/core/agents/parse-target"
 import type { CaseResult, RunManifest } from "@/core/types"
 
 const CATEGORIES = ["build", "find", "ask"] as const
@@ -8,6 +9,7 @@ type Category = (typeof CATEGORIES)[number]
 export type MatrixRow = {
   target: string
   agent: string
+  model: string | null
   providerId: string | null
   passRate: number
   meanScore: number
@@ -17,6 +19,13 @@ export type MatrixRow = {
   inTok: number
   outTok: number
   perCategory: Partial<Record<Category, number>>
+}
+
+function shortModel(model: string | null): string {
+  if (!model) return "—"
+  // Drop the provider prefix (`anthropic/`, `openai/`) so the column stays readable.
+  const slash = model.lastIndexOf("/")
+  return slash >= 0 ? model.slice(slash + 1) : model
 }
 
 type Goal = "max" | "min" | "none"
@@ -104,10 +113,13 @@ const COLUMNS: ColumnDef[] = [
   },
 ]
 
-function agentOf(target: string): { agent: string; providerId: string | null } {
-  const plus = target.indexOf("+")
-  if (plus === -1) return { agent: target, providerId: null }
-  return { agent: target.slice(0, plus), providerId: target.slice(plus + 1) }
+function agentOf(target: string): {
+  agent: string
+  model: string | null
+  providerId: string | null
+} {
+  const parts = parseTargetId(target)
+  return { agent: parts.base, model: parts.model, providerId: parts.providerId }
 }
 
 function mean(nums: number[]): number {
@@ -122,7 +134,7 @@ export function buildMatrixRows(
   const perModelAgg = manifest.aggregate.perModel
   const rows: MatrixRow[] = []
   for (const target of manifest.models) {
-    const { agent, providerId } = agentOf(target)
+    const { agent, model, providerId } = agentOf(target)
     const forTarget = cases.filter((c) => c.model === target)
     const perCategory: MatrixRow["perCategory"] = {}
     for (const cat of CATEGORIES) {
@@ -133,6 +145,7 @@ export function buildMatrixRows(
     rows.push({
       target,
       agent,
+      model,
       providerId,
       passRate: agg?.passRate ?? 0,
       meanScore: agg?.meanScore ?? 0,
@@ -144,10 +157,14 @@ export function buildMatrixRows(
       perCategory,
     })
   }
-  // Group base + composed variants together in output order (base first, then
-  // providers alphabetically).
+  // Group by (agent, model) so base + composed variants of the same
+  // (agent, model) pair sit adjacent, and different models of the same agent
+  // sit next to each other.
   rows.sort((a, b) => {
     if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
+    const am = a.model ?? ""
+    const bm = b.model ?? ""
+    if (am !== bm) return am.localeCompare(bm)
     if (a.providerId == null) return -1
     if (b.providerId == null) return 1
     return a.providerId.localeCompare(b.providerId)
@@ -180,7 +197,9 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-[9rem]">Target</TableHead>
+                <TableHead className="min-w-[6rem]">Agent</TableHead>
+                <TableHead className="min-w-[10rem]">Model</TableHead>
+                <TableHead className="min-w-[5rem]">Provider</TableHead>
                 {COLUMNS.map((c) => (
                   <TableHead key={c.key} className="text-right font-medium">
                     {c.label}
@@ -196,12 +215,20 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
                 const isNewAgent = ri > 0 && rows[ri - 1].agent !== r.agent
                 return (
                   <TableRow key={r.target} className={isNewAgent ? "border-t-2" : undefined}>
+                    <TableCell className="font-mono text-xs">{r.agent}</TableCell>
+                    <TableCell
+                      className="font-mono text-xs text-muted-foreground"
+                      title={r.model ?? "adapter default"}
+                    >
+                      {shortModel(r.model)}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
-                      {r.target}
-                      {r.providerId && (
-                        <span className="ml-1.5 rounded bg-primary/10 px-1 py-0.5 text-[10px] text-primary">
+                      {r.providerId ? (
+                        <span className="rounded bg-primary/10 px-1 py-0.5 text-primary">
                           +{r.providerId}
                         </span>
+                      ) : (
+                        <span className="text-muted-foreground">baseline</span>
                       )}
                     </TableCell>
                     {COLUMNS.map((c, ci) => {
@@ -233,6 +260,7 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
 
 type DeltaRow = {
   agent: string
+  model: string | null
   providerId: string
   base: MatrixRow
   composed: MatrixRow
@@ -240,19 +268,28 @@ type DeltaRow = {
 
 function pairsByProvider(rows: MatrixRow[]): DeltaRow[] {
   const bases = new Map<string, MatrixRow>()
+  const keyOf = (r: MatrixRow) => `${r.agent}@${r.model ?? ""}`
   for (const r of rows) {
-    if (r.providerId == null) bases.set(r.agent, r)
+    if (r.providerId == null) bases.set(keyOf(r), r)
   }
   const out: DeltaRow[] = []
   for (const r of rows) {
     if (r.providerId == null) continue
-    const base = bases.get(r.agent)
+    const base = bases.get(keyOf(r))
     if (!base) continue
-    out.push({ agent: r.agent, providerId: r.providerId, base, composed: r })
+    out.push({
+      agent: r.agent,
+      model: r.model,
+      providerId: r.providerId,
+      base,
+      composed: r,
+    })
   }
-  // Sort by agent, then by provider id, so rows group by agent.
   out.sort((a, b) => {
     if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
+    const am = a.model ?? ""
+    const bm = b.model ?? ""
+    if (am !== bm) return am.localeCompare(bm)
     return a.providerId.localeCompare(b.providerId)
   })
   return out
@@ -284,9 +321,11 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
       <CardHeader>
         <CardTitle>Context-provider delta</CardTitle>
         <CardDescription>
-          One row per <span className="font-mono">(agent, provider)</span> — value is{" "}
-          <code className="text-xs">+&lt;provider&gt;</code> minus baseline. Green = the provider
-          moved the metric in the desired direction; red = it moved against it.
+          One row per <span className="font-mono">(agent, model, provider)</span> — value is{" "}
+          <code className="text-xs">+&lt;provider&gt;</code> minus the baseline for the same
+          agent + model. Green = the provider moved the metric in the desired direction; red = it
+          moved against it. Rows are only shown when both the baseline and the composed variant
+          ran in this run.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -294,7 +333,8 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-[7rem]">Agent</TableHead>
+                <TableHead className="min-w-[6rem]">Agent</TableHead>
+                <TableHead className="min-w-[10rem]">Model</TableHead>
                 <TableHead className="min-w-[5rem]">Provider</TableHead>
                 {COLUMNS.map((c) => (
                   <TableHead key={c.key} className="text-right font-medium">
@@ -308,10 +348,16 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
                 const isNewAgent = i > 0 && pairs[i - 1].agent !== p.agent
                 return (
                   <TableRow
-                    key={`${p.agent}+${p.providerId}`}
+                    key={`${p.agent}@${p.model ?? ""}+${p.providerId}`}
                     className={isNewAgent ? "border-t-2" : undefined}
                   >
                     <TableCell className="font-mono text-xs">{p.agent}</TableCell>
+                    <TableCell
+                      className="font-mono text-xs text-muted-foreground"
+                      title={p.model ?? "adapter default"}
+                    >
+                      {shortModel(p.model)}
+                    </TableCell>
                     <TableCell className="font-mono text-xs">+{p.providerId}</TableCell>
                     {COLUMNS.map((c) => {
                       const d = deltaCell(

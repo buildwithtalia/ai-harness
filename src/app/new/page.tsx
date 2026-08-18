@@ -1,6 +1,7 @@
 import { listSuiteNames, getSuite } from "@/evals"
-import { baseAgents } from "@/core/agents"
+import { baseAgents, listSupportedModels, supportsModelOverride } from "@/core/agents"
 import { listProviders } from "@/core/context-providers"
+import type { BaseAgentId } from "@/core/agents"
 import { NewRunForm } from "./new-run-form"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 
@@ -25,7 +26,15 @@ export default async function NewRunPage(props: PageProps<"/new">) {
     }
   })
 
-  const agents = baseAgents.map((a) => ({ id: a.id, displayName: a.displayName }))
+  const agents = baseAgents.map((a) => {
+    const base = a.id as BaseAgentId
+    return {
+      id: a.id,
+      displayName: a.displayName,
+      supportsModelOverride: supportsModelOverride(base),
+      supportedModels: listSupportedModels(base),
+    }
+  })
   const providers = listProviders().map((p) => ({
     id: p.id,
     displayName: p.displayName,

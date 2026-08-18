@@ -19,6 +19,8 @@ export type ProviderInfo = {
 export type AgentInfo = {
   id: string
   displayName: string
+  supportsModelOverride: boolean
+  supportedModels: string[]
 }
 
 export function NewRunForm({
@@ -40,6 +42,12 @@ export function NewRunForm({
   const [selectedProviders, setSelectedProviders] = useState<Set<string>>(
     () => new Set(providers.filter((p) => p.configured).map((p) => p.id)),
   )
+  // Per-agent model selection: agent id → Set<modelId>. Empty set = "use the
+  // adapter's default model" (single target per condition, no @model suffix).
+  const [selectedModels, setSelectedModels] = useState<Record<string, Set<string>>>(
+    () => Object.fromEntries(agents.map((a) => [a.id, new Set<string>()])),
+  )
+  const [modelsExpanded, setModelsExpanded] = useState<Record<string, boolean>>({})
   const [includeBaseline, setIncludeBaseline] = useState(true)
   const [limit, setLimit] = useState<string>("")
 
@@ -53,23 +61,46 @@ export function NewRunForm({
     [suites, suiteName, initial],
   )
 
-  const targets = useMemo(() => {
-    const ids: string[] = []
-    for (const a of Array.from(selectedAgents).sort()) {
-      if (includeBaseline) ids.push(a)
-      for (const p of Array.from(selectedProviders).sort()) {
-        ids.push(`${a}+${p}`)
-      }
-    }
-    return ids
-  }, [selectedAgents, selectedProviders, includeBaseline])
-
-  function toggle(set: Set<string>, value: string, setter: (s: Set<string>) => void) {
+  function toggleFrom(set: Set<string>, value: string, apply: (next: Set<string>) => void) {
     const next = new Set(set)
     if (next.has(value)) next.delete(value)
     else next.add(value)
-    setter(next)
+    apply(next)
   }
+
+  function toggleModel(agentId: string, model: string) {
+    setSelectedModels((prev) => {
+      const next = { ...prev }
+      const set = new Set(next[agentId] ?? [])
+      if (set.has(model)) set.delete(model)
+      else set.add(model)
+      next[agentId] = set
+      return next
+    })
+  }
+
+  const targets = useMemo(() => {
+    const ids: string[] = []
+    const agentIds = Array.from(selectedAgents).sort()
+    const providerIds = Array.from(selectedProviders).sort()
+
+    for (const a of agentIds) {
+      const info = agents.find((x) => x.id === a)
+      const chosen = Array.from(selectedModels[a] ?? [])
+      // If this agent supports model override and the user picked at least one
+      // model, expand over the chosen models. Otherwise use the adapter default
+      // (single target per condition, no @model suffix).
+      const modelChoices =
+        info?.supportsModelOverride && chosen.length > 0 ? chosen.sort() : [null]
+
+      for (const model of modelChoices) {
+        const stem = model ? `${a}@${model}` : a
+        if (includeBaseline) ids.push(stem)
+        for (const p of providerIds) ids.push(`${stem}+${p}`)
+      }
+    }
+    return ids
+  }, [selectedAgents, selectedProviders, selectedModels, includeBaseline, agents])
 
   const disabled =
     pending ||
@@ -97,70 +128,112 @@ export function NewRunForm({
         )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <fieldset className="space-y-1.5">
-          <legend className="text-sm font-medium">
-            Agents{" "}
-            <span className="text-xs text-muted-foreground">
-              ({selectedAgents.size}/{agents.length})
-            </span>
-          </legend>
-          <div className="space-y-1">
-            {agents.map((a) => (
-              <label
-                key={a.id}
-                className="flex items-center gap-2 rounded border px-2 py-1.5 text-xs cursor-pointer hover:bg-accent/50"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedAgents.has(a.id)}
-                  onChange={() => toggle(selectedAgents, a.id, setSelectedAgents)}
-                />
-                <span className="font-mono">{a.id}</span>
-                <span className="text-muted-foreground">— {a.displayName}</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset className="space-y-1.5">
-          <legend className="text-sm font-medium">
-            Context providers{" "}
-            <span className="text-xs text-muted-foreground">
-              ({selectedProviders.size}/{providers.length})
-            </span>
-          </legend>
-          <div className="space-y-1">
-            {providers.map((p) => (
-              <label
-                key={p.id}
-                className="flex items-center gap-2 rounded border px-2 py-1.5 text-xs cursor-pointer hover:bg-accent/50"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedProviders.has(p.id)}
-                  onChange={() => toggle(selectedProviders, p.id, setSelectedProviders)}
-                />
-                <span className="font-mono">+{p.id}</span>
-                <span className="text-muted-foreground">— {p.displayName}</span>
-                {!p.configured && (
-                  <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-                    env missing
-                  </span>
+      <fieldset className="space-y-1.5">
+        <legend className="text-sm font-medium">
+          Agents{" "}
+          <span className="text-xs text-muted-foreground">
+            ({selectedAgents.size}/{agents.length})
+          </span>
+        </legend>
+        <div className="space-y-1">
+          {agents.map((a) => {
+            const isOn = selectedAgents.has(a.id)
+            const modelSet = selectedModels[a.id] ?? new Set<string>()
+            const expanded = modelsExpanded[a.id] ?? false
+            return (
+              <div key={a.id} className="rounded border">
+                <div className="flex items-center gap-2 px-2 py-1.5 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={isOn}
+                    onChange={() => toggleFrom(selectedAgents, a.id, setSelectedAgents)}
+                  />
+                  <span className="font-mono">{a.id}</span>
+                  <span className="text-muted-foreground">— {a.displayName}</span>
+                  {a.supportsModelOverride && isOn && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setModelsExpanded((s) => ({ ...s, [a.id]: !s[a.id] }))
+                      }
+                      className="ml-auto rounded border px-1.5 py-0.5 text-[10px] hover:bg-accent/50"
+                    >
+                      {modelSet.size > 0
+                        ? `${modelSet.size} model${modelSet.size === 1 ? "" : "s"}`
+                        : "default model"}{" "}
+                      {expanded ? "▾" : "▸"}
+                    </button>
+                  )}
+                  {!a.supportsModelOverride && isOn && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                      picks its own model
+                    </span>
+                  )}
+                </div>
+                {a.supportsModelOverride && isOn && expanded && (
+                  <div className="border-t bg-muted/30 px-2 py-1.5 space-y-0.5">
+                    <p className="text-[10px] text-muted-foreground">
+                      Uncheck all to use the adapter default. Any subset runs one target per
+                      model.
+                    </p>
+                    {a.supportedModels.map((m) => (
+                      <label
+                        key={m}
+                        className="flex items-center gap-2 text-xs cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={modelSet.has(m)}
+                          onChange={() => toggleModel(a.id, m)}
+                        />
+                        <span className="font-mono">{m}</span>
+                      </label>
+                    ))}
+                  </div>
                 )}
-              </label>
-            ))}
-          </div>
-          <label className="mt-2 flex items-center gap-2 text-xs">
-            <input
-              type="checkbox"
-              checked={includeBaseline}
-              onChange={(e) => setIncludeBaseline(e.target.checked)}
-            />
-            Include baseline (no provider)
-          </label>
-        </fieldset>
-      </div>
+              </div>
+            )
+          })}
+        </div>
+      </fieldset>
+
+      <fieldset className="space-y-1.5">
+        <legend className="text-sm font-medium">
+          Context providers{" "}
+          <span className="text-xs text-muted-foreground">
+            ({selectedProviders.size}/{providers.length})
+          </span>
+        </legend>
+        <div className="space-y-1">
+          {providers.map((p) => (
+            <label
+              key={p.id}
+              className="flex items-center gap-2 rounded border px-2 py-1.5 text-xs cursor-pointer hover:bg-accent/50"
+            >
+              <input
+                type="checkbox"
+                checked={selectedProviders.has(p.id)}
+                onChange={() => toggleFrom(selectedProviders, p.id, setSelectedProviders)}
+              />
+              <span className="font-mono">+{p.id}</span>
+              <span className="text-muted-foreground">— {p.displayName}</span>
+              {!p.configured && (
+                <span className="ml-auto rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+                  env missing
+                </span>
+              )}
+            </label>
+          ))}
+        </div>
+        <label className="mt-2 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={includeBaseline}
+            onChange={(e) => setIncludeBaseline(e.target.checked)}
+          />
+          Include baseline (no provider)
+        </label>
+      </fieldset>
 
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between">

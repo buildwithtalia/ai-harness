@@ -1,6 +1,12 @@
 # ai-harness
 
-An eval harness for comparing coding agents **with and without any context provider** on realistic engineering tasks. Runs Claude Code, Devin, Cursor, and Codex — each paired against any provider registered under `src/core/context-providers/` (Context Graph, Orbit, whatever comes next) — and scores every output with a deterministic checker + an LLM judge on category-specific rubrics. Results land as JSONL artifacts and render in a Next.js dashboard with a Z.ai-style metrics matrix and a per-(agent, provider) delta table.
+An eval harness for measuring **agent × model × context** on realistic engineering tasks. Every run is a matrix over three axes:
+
+- **Agents** (products) — Claude Code, Devin, Cursor, Codex.
+- **Models** — for agents that route through the AI Gateway (Claude, Codex) the underlying model can be swapped at run time (`anthropic/claude-opus-4-7` vs `-sonnet-4-5` vs `-haiku-4-5`, and the Codex family); Devin and Cursor pin to their own routing.
+- **Context providers** — any provider registered under `src/core/context-providers/` (Context Graph, Orbit, …), plus a "no provider" baseline.
+
+Every output is scored with a deterministic checker + an LLM judge on category-specific rubrics. Results land as JSONL artifacts and render in a Next.js dashboard with a metrics matrix that has explicit Agent / Model / Provider columns and a delta table that pairs each `+provider` run against the baseline for the **same (agent, model)** pair.
 
 ## How it works
 
@@ -32,7 +38,19 @@ An eval harness for comparing coding agents **with and without any context provi
 └───────────────┘
 ```
 
-1. **A suite** (`src/evals/agent-benchmark.ts`) is a list of prompts + rubric(s) + a list of target ids. Ids can be coding agents (`claude`, `devin`, `cursor`, `codex`), their **composed** context-provider variants (`claude+cg`, `claude+orbit`, `devin+cg`, …), or raw model strings for the Vercel AI Gateway (`anthropic/claude-opus-4-7`, `openai/gpt-5`, …). A composed id is `<base>+<providerId>` where the provider slug comes from `src/core/context-providers/` (`cg` for Context Graph, `orbit` for Orbit, …). Prompts are framed **APIFlow-Bench-style** — each case has a `ticket` block (broken call + error hint + ask) that the runner prepends to the input, so the agent reads a realistic dev ticket instead of a clean prompt.
+1. **A suite** (`src/evals/agent-benchmark.ts`) is a list of prompts + rubric(s) + a list of target ids. Target-id grammar:
+
+   ```
+   <base>[@<model>][+<providerId>]
+   ```
+
+   - `<base>` is either a coding-agent id (`claude`, `devin`, `cursor`, `codex`) or a raw AI-Gateway model string (`anthropic/claude-opus-4-7`, `openai/gpt-5`).
+   - `@<model>` optionally overrides the adapter's default model. Only supported by agents that route through the AI Gateway (`claude`, `codex`); Devin and Cursor pin to their own routing.
+   - `+<providerId>` composes the target with a registered context provider (`cg` for Context Graph, `orbit` for Orbit).
+
+   Examples: `claude`, `claude@anthropic/claude-sonnet-4-5`, `claude+cg`, `claude@anthropic/claude-sonnet-4-5+orbit`, `devin+cg`. The registry (`src/core/agents/`) resolves an id lazily via `parseTargetId` + adapter factories (`createClaudeAdapter(model)`, `createCodexAdapter(model)`), so the cross product isn't materialised — only the ids you actually ask for exist.
+
+   Prompts are framed **APIFlow-Bench-style** — each case has a `ticket` block (broken call + error hint + ask) that the runner prepends to the input, so the agent reads a realistic dev ticket instead of a clean prompt.
 2. **The runner** (`src/core/runner.ts`) iterates over `(target × case)`. If the target is an agent id it dispatches through an adapter under `src/core/agents/`; otherwise it calls `generateText` on the underlying model. Latency, tokens, and cost are captured per call.
 3. **Adapters** wrap the real agent APIs — Vercel AI Gateway for Claude and Codex; `api.devin.ai/v1/sessions` for Devin; `api.cursor.com/v0/agents` for Cursor. Composed variants like `claude+cg` or `claude+orbit` are produced generically by `withProvider(baseAdapter, provider)` in `src/core/agents/with-provider.ts`: it calls the provider's `query(prompt, repoUrl, repoPath)`, prepends the returned documents/summary as extra context, and delegates to the underlying adapter — so latency and quality are directly comparable across providers.
 4. **Scorers** (`src/core/scorers/`) grade each output. `agent-benchmark` runs two in parallel per case:
@@ -226,7 +244,13 @@ pnpm install
 pnpm dev            # http://localhost:3000
 ```
 
-Click **New run** (top-right on the runs index, also `/new`). Pick the suite, choose which **agents** to run (`claude`, `devin`, `cursor`, `codex`), choose which **context providers** to compare them against (`cg`, `orbit`, …), toggle **Include baseline (no provider)** on/off, and optionally set a case limit. The form previews the computed target list live (e.g. `claude, claude+cg, claude+orbit, devin, devin+cg`) and the submit button reads `Start run (<targets> × <cases>)` so cost is visible before you commit. Providers whose env vars aren't set show an `env missing` chip.
+Click **New run** (top-right on the runs index, also `/new`). Pick the suite, then choose along three axes:
+
+- **Agents** — check the ones you want (`claude`, `devin`, `cursor`, `codex`). For agents that support model overrides (Claude, Codex), each row has a `default model ▸` button that expands into a checkbox list of supported models. Leave all model boxes unchecked to use the adapter default; check one or more to fan the run out across models. Devin and Cursor row shows "picks its own model" and offers no override.
+- **Context providers** — check `cg`, `orbit`, or any other registered provider. Providers whose env vars aren't set show an `env missing` chip.
+- **Include baseline (no provider)** toggle — on by default. Turn off if you only want composed targets.
+
+The form previews the computed target list live (e.g. `claude, claude@anthropic/claude-opus-4-7+cg, claude@anthropic/claude-sonnet-4-5, claude@anthropic/claude-sonnet-4-5+cg, devin, devin+cg`) and the submit button reads `Start run (<targets> × <cases>)` so cost is visible before you commit.
 
 You'll be redirected to the run page, which auto-refreshes every 3 seconds while the run is in progress — cases appear in the matrix as they complete.
 
@@ -275,7 +299,7 @@ The X / Y / Z percentages in the post come straight out of `results/skill-input.
 
 | Tagline claim | Field | How the skill derives the % |
 |---|---|---|
-| **"X% better at APIs"** | `providerDeltas[].meanScoreDelta` or `passRateDelta` | The skill picks the `providerId` under test (usually `cg`), filters `perCategoryByTarget` to `category === "build"` or `"ask"` for API-shaped work, and takes the mean delta across agents. Positive = the provider made the model better. |
+| **"X% better at APIs"** | `providerDeltas[].meanScoreDelta` or `passRateDelta` (each row carries `agent`, `model`, `providerId`) | The skill picks the `providerId` under test (usually `cg`), filters `perCategoryByTarget` to `category === "build"` or `"ask"` for API-shaped work, and takes the mean delta across agents. Because each delta row is keyed on (agent, model, provider), the skill can slice the tagline per (agent, model) pair — e.g. "the graph helps Claude Opus 4.7 more than it helps Claude Sonnet 4.5." Positive = the provider made the model better. |
 | **"Y% cheaper per task"** | `providerDeltas[].costDelta` combined with `aggregate.perModel[target].totalCostUsd` | Cost-per-passed-case: `totalCostUsd / passCount` for base vs `+provider`; the tagline reports the percentage reduction. |
 | **"Z% more autonomous"** | `runs/<id>/cases.jsonl` → `diagnostics.toolCallCount` + `stepCount` | Autonomy is agent-side: fewer tool calls / steps to reach the same quality means the model + provider needed less prodding. The skill computes `(baseline_calls − provider_calls) / baseline_calls` at equal-or-higher score. |
 
