@@ -10,7 +10,7 @@
  *   - `@model` optionally overrides the adapter's default MODEL constant.
  *     Only agents that route through the AI Gateway (claude, codex) accept
  *     this override; devin/cursor pin to their own routing.
- *   - `+providerId` composes the target with a context provider (`cg`, `orbit`).
+ *   - `+providerId` composes the target with a context provider (`cg`).
  *
  * Examples:
  *   claude                            → base=claude, default model, no provider
@@ -27,7 +27,7 @@ export type TargetParts = {
   providerId: string | null
 }
 
-/** Slug regex for provider ids (`cg`, `orbit`, `foo_bar`). No `/` or `@`. */
+/** Slug regex for provider ids (`cg`, `foo_bar`). No `/` or `@`. */
 const PROVIDER_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i
 
 function splitOnLastProvider(id: string): {

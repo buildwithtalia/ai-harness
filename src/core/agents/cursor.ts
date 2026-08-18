@@ -1,6 +1,6 @@
 import { composePrompt, requireEnv, type AgentAdapter } from "./types"
 
-const API_BASE = process.env.CURSOR_API_BASE ?? "https://api.cursor.com/v0"
+const API_BASE = process.env.CURSOR_API_BASE ?? "https://api.cursor.com/v1"
 const POLL_INTERVAL_MS = 5_000
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000
 
@@ -40,11 +40,13 @@ export const cursorAgent: AgentAdapter = {
 
     const repoUrl = ctx.contextRepoUrl ?? CURSOR_REPOSITORY
 
+    // Cursor Cloud Agents v1 shape (docs pulled 2026-08-18):
+    //   POST /v1/agents  { prompt: { text }, repos: [{ url, startingRef }] }
     const created = await api<{ id: string; url?: string }>("/agents", CURSOR_API_KEY, {
       method: "POST",
       body: JSON.stringify({
         prompt: { text: composePrompt(ctx) },
-        source: { repository: repoUrl },
+        repos: [{ url: repoUrl, startingRef: "main" }],
       }),
     })
 
@@ -65,7 +67,7 @@ export const cursorAgent: AgentAdapter = {
       const assistantMsgs = (convo.messages ?? []).filter((m) => m.role === "assistant")
       if (assistantMsgs.length) text = assistantMsgs[assistantMsgs.length - 1].content
     } catch {
-      // conversation endpoint may not exist; keep summary
+      // conversation endpoint may not exist for every account tier
     }
 
     return {

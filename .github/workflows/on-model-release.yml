@@ -47,8 +47,6 @@ jobs:
       CURSOR_REPOSITORY:        ${{ secrets.CURSOR_REPOSITORY }}
       POSTMAN_CONTEXT_GRAPH_API_URL: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_URL }}
       POSTMAN_CONTEXT_GRAPH_API_KEY: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_KEY }}
-      ORBIT_API_URL:            ${{ secrets.ORBIT_API_URL }}
-      ORBIT_API_KEY:            ${{ secrets.ORBIT_API_KEY }}
       SKILL_WEBHOOK_URL:        ${{ secrets.SKILL_WEBHOOK_URL }}
       SKILL_WEBHOOK_TOKEN:      ${{ secrets.SKILL_WEBHOOK_TOKEN }}
       SKILL_TRIGGER_MODEL:      ${{ github.event.inputs.model || github.event.client_payload.model }}

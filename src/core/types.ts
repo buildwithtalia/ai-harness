@@ -167,7 +167,7 @@ export type EvalSuite = {
 export type CaseDiagnostics = {
   toolCallCount: number
   stepCount: number
-  /** The context-provider slug (e.g. "cg", "orbit"), only present for composed targets. */
+  /** The context-provider slug (e.g. "cg"), only present for composed targets. */
   providerId?: string
   /** ms spent inside the context-provider lookup, only present for composed targets. */
   providerLatencyMs?: number

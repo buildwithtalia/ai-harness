@@ -49,8 +49,8 @@ export default async function NewRunPage(props: PageProps<"/new">) {
         <h1 className="text-2xl font-semibold tracking-tight">New run</h1>
         <p className="text-sm text-muted-foreground mt-1">
           For each coding framework: pick model(s), then pick which conditions to run — baseline,
-          <span className="font-mono"> +cg</span>, <span className="font-mono">+orbit</span>, or
-          any combination. The target list is the cross product of the boxes you check.
+          <span className="font-mono"> +cg</span>, or any combination. The target list is the
+          cross product of the boxes you check.
         </p>
       </div>
 

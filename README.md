@@ -4,7 +4,7 @@ An eval harness for measuring **agent × model × context** on realistic enginee
 
 - **Agents** — coding-agent products (Claude Code, Devin, Cursor, Codex).
 - **Models** — the underlying LLM for agents that expose it (Claude, Codex go through the Vercel AI Gateway; Devin and Cursor pin to their own routing).
-- **Context providers** — pluggable retrieval layers registered under `src/core/context-providers/` (Context Graph, Orbit, whatever ships next), plus a "no provider" baseline.
+- **Context providers** — pluggable retrieval layers registered under `src/core/context-providers/` (Context Graph today, whatever ships next), plus a "no provider" baseline.
 
 Every output is graded by a **deterministic checker + an LLM judge on category-specific rubrics**. Results land as JSONL artifacts and render in a Next.js dashboard with a metrics matrix (Agent / Model / Provider columns, best-cell highlighting) and a delta table that pairs each `+provider` run against the baseline for the **same `(agent, model)`** pair. Every completed run also emits `results/skill-input.json` for the [release-autopilot skill](#release-autopilot-skill-handshake).
 
@@ -50,7 +50,6 @@ Examples parsed by `src/core/agents/parse-target.ts`:
 | `claude` | claude | — | — |
 | `claude@anthropic/claude-sonnet-4-5` | claude | anthropic/claude-sonnet-4-5 | — |
 | `claude+cg` | claude | — | cg |
-| `claude@anthropic/claude-sonnet-4-5+orbit` | claude | anthropic/claude-sonnet-4-5 | orbit |
 | `devin+cg` | devin | — | cg |
 | `anthropic/claude-opus-4-7` | (raw model) | anthropic/claude-opus-4-7 | — |
 
@@ -226,7 +225,7 @@ A **ContextProvider** is defined by `src/core/context-providers/types.ts`:
 
 ```ts
 {
-  id: string                                 // slug used in target ids (`cg`, `orbit`)
+  id: string                                 // slug used in target ids (`cg`)
   displayName: string
   requiredEnv: string[]
   isConfigured(): boolean
@@ -254,8 +253,6 @@ The runner extracts `meta.provider` into `CaseResult.diagnostics.{providerId, pr
 Both currently stubs — they read their own env vars, POST `{ prompt, repoUrl, repoPath }`, and expect `{ summary, documents[] }`. Wiring stays constant; only the fetch call changes when each API contract is finalised.
 
 - **`cg` — Context Graph** (`src/core/context-providers/context-graph.ts`). Env: `POSTMAN_CONTEXT_GRAPH_API_URL`, `POSTMAN_CONTEXT_GRAPH_API_KEY` (names match the release-autopilot skill in `Postman-Devrel/devrel-claude-code-skills` PR #3).
-- **`orbit` — Orbit** (`src/core/context-providers/orbit.ts`). Env: `ORBIT_API_URL`, `ORBIT_API_KEY`.
-
 ### Adding a new provider
 
 1. Create `src/core/context-providers/<slug>.ts` that exports a `ContextProvider` instance.
@@ -420,7 +417,7 @@ Top of the page shows a run switcher (last 8 runs). Below:
 - **Metrics matrix** (`src/app/compare/metrics-matrix.tsx`). Columns:
   - `Agent` — base agent id.
   - `Model` — short model name (drops the `<provider>/` prefix for readability; full id in the cell's `title`). Shows `—` for agents that pick their own model.
-  - `Provider` — `+cg` / `+orbit` / `baseline`.
+  - `Provider` — `+cg` / `baseline`.
   - `Pass ↑`, `Score ↑`, `Cost ↓`, `p50 ↓`, `p95 ↓`, `Out tok`, `build ↑`, `find ↑`, `ask ↑`.
   - Best cell per column is highlighted emerald. Rows are grouped by agent, then by model, then by provider.
 - **Context-provider delta matrix**. One row per `(agent, model, provider)` triple where both the baseline and the composed variant ran. Cells show `+provider − baseline` in green (moved in the desired direction) / red (moved against it) / muted (unchanged or informational). This is the "does the provider help this specific (agent, model)?" table.
@@ -652,7 +649,6 @@ Three GitHub Actions workflows live under `.github/workflows/`.
 | `DEVIN_API_KEY` | `devin` |
 | `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | `cursor` |
 | `POSTMAN_CONTEXT_GRAPH_API_URL`, `POSTMAN_CONTEXT_GRAPH_API_KEY` | any `+cg` composed target |
-| `ORBIT_API_URL`, `ORBIT_API_KEY` | any `+orbit` composed target |
 | `SKILL_WEBHOOK_URL`, `SKILL_WEBHOOK_TOKEN` | optional — POST completed runs to the release-autopilot skill |
 
 Missing env raises `MissingAgentEnvError` for that agent/provider combination only — the other agents still run. The `/new` form flags providers whose env is unset with an `env missing` chip so you don't queue a run that will error every case.
@@ -709,7 +705,7 @@ Everything below is scaffolded but stubbed / provisional. The wiring is in place
   - `devin` — confirm `POST /v1/sessions` shape and session-title conventions.
   - `cursor` — confirm `POST /v0/agents` response schema; drop the `/conversation` fallback branch once known.
 - **Cost table** — `src/core/cost.ts` covers a starter set. New model ids need a row before their cost column is meaningful.
-- **Context provider APIs** — both `cg` and `orbit` are stubs. Each reads `<PROVIDER>_API_URL` + `<PROVIDER>_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on real endpoint URLs, auth schemes, request/response contracts. Once known, only the provider's file changes — composed adapters, `/new`, runner, dashboard, diagnostics, delta matrix all already work.
+- **Context provider APIs** — `cg` (Postman Context Graph) is a stub. It reads `POSTMAN_CONTEXT_GRAPH_API_URL` + `POSTMAN_CONTEXT_GRAPH_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on the real endpoint URL, auth scheme, request/response contract. Once known, only `context-graph.ts` changes — composed adapters, `/new`, runner, dashboard, diagnostics, delta matrix all already work.
 - **Adopt more of APIFlow-Bench** — provenance-gated grading, bootstrap 90% CIs on pass rate, golden replay + bank-content SHA in `registry.json`, chain-1-to-k prefix cases, deterministic local mocks per `build` case. The most valuable single addition is provenance-gated grading — grading on task-unique canary-derived values the agent can only produce by driving the fixture backend.
 
 Adding a third provider is one file + one line in `src/core/context-providers/index.ts`; the agent registry, `/new` form, delta matrix, and skill payload pick it up automatically.
@@ -745,8 +741,7 @@ Adding a third provider is one file + one line in `src/core/context-providers/in
     │   ├── context-providers/
     │   │   ├── types.ts            # ContextProvider interface + default formatter
     │   │   ├── context-graph.ts    # STUB — POSTMAN_CONTEXT_GRAPH_API_URL / API_KEY
-    │   │   ├── orbit.ts            # STUB — ORBIT_API_URL / API_KEY
-    │   │   └── index.ts            # provider registry (`cg`, `orbit`)
+    │   │   └── index.ts            # provider registry (`cg`)
     │   ├── scorers/
     │   │   ├── deterministic.ts    # must-mention, regex, structured-output, custom
     │   │   ├── judge.ts            # LLM judge with Zod-schema output

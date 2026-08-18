@@ -60,20 +60,16 @@ const suite: EvalSuite = {
   // Default target list. The /new form lets you pick a different set at run
   // time (base agents × context providers); this list is what runs when
   // nothing is overridden. Includes each of the 4 base agents paired with
-  // each registered context provider (cg, orbit) plus the bare baseline.
+  // each registered context provider (cg) plus the bare baseline.
   models: [
     "claude",
     "claude+cg",
-    "claude+orbit",
     "devin",
     "devin+cg",
-    "devin+orbit",
     "cursor",
     "cursor+cg",
-    "cursor+orbit",
     "codex",
     "codex+cg",
-    "codex+orbit",
   ],
   judgeModel: "anthropic/claude-opus-4-7",
   rubricsByCategory: {
