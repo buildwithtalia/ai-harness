@@ -190,12 +190,16 @@ export type CaseResult = {
   error?: { message: string; stack?: string }
 }
 
+export type RunStatus = "running" | "completed" | "errored"
+
 export type RunManifest = {
   id: string
   suite: string
   suiteDescription?: string
   startedAt: string
   finishedAt?: string
+  status: RunStatus
+  error?: string
   models: ModelId[]
   caseCount: number
   scorers: string[]

@@ -36,13 +36,26 @@ An eval harness for comparing coding agents **with and without a Context Graph**
 
 ## Run it
 
+Two ways to kick off a run:
+
+### From the dashboard
+
 ```bash
 pnpm install
-pnpm dev            # dashboard at http://localhost:3000
+pnpm dev            # http://localhost:3000
+```
 
-pnpm eval agent-benchmark               # run the whole suite
-pnpm eval agent-benchmark --models=claude,claude+cg   # scope to a pair
-pnpm eval:list                          # list available suites
+Click **New run** (top-right on the runs index, also `/new`). Pick the suite, uncheck any targets you want to skip, optionally set a case limit, and hit **Start run**. You'll be redirected to the run page, which auto-refreshes every 3 seconds while the run is in progress — cases appear in the matrix as they complete.
+
+Runs kicked off from the UI execute in-process inside the Next.js dev server. Closing the terminal or a hot-reload will kill an in-progress run; that's fine for local iteration but means this pattern is dev-only. Deploying to Vercel would need a queue (Vercel Queues / Workflow DevKit).
+
+### From the CLI
+
+```bash
+pnpm eval agent-benchmark                              # whole suite
+pnpm eval agent-benchmark --models=claude,claude+cg    # scope to a pair
+pnpm eval agent-benchmark --limit=2                    # smoke run
+pnpm eval:list                                         # list available suites
 ```
 
 ## Continuous integration

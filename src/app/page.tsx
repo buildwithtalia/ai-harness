@@ -2,6 +2,7 @@ import Link from "next/link"
 import { listRuns, readManifest } from "@/core/artifacts"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 
 export const dynamic = "force-dynamic"
 
@@ -17,11 +18,16 @@ export default async function RunsIndex() {
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10 space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Eval runs</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Artifacts written by <code className="text-xs">pnpm eval &lt;suite&gt;</code> under <code className="text-xs">runs/</code>.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Eval runs</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Started here or via <code className="text-xs">pnpm eval &lt;suite&gt;</code>; artifacts live under <code className="text-xs">runs/</code>.
+          </p>
+        </div>
+        <Button asChild>
+          <Link href="/new">New run</Link>
+        </Button>
       </div>
 
       {manifests.length === 0 ? (
@@ -48,7 +54,10 @@ export default async function RunsIndex() {
                 <Card className="hover:bg-accent/40 transition-colors">
                   <CardContent className="flex items-center justify-between py-4">
                     <div>
-                      <div className="font-medium">{m.suite}</div>
+                      <div className="flex items-center gap-2">
+                        <div className="font-medium">{m.suite}</div>
+                        <StatusPill status={m.status ?? "completed"} />
+                      </div>
                       <div className="text-xs text-muted-foreground mt-0.5">
                         {new Date(m.startedAt).toLocaleString()} · {m.caseCount} cases · {m.models.length} models
                       </div>
@@ -58,7 +67,11 @@ export default async function RunsIndex() {
                         <div className="text-xs text-muted-foreground">best pass</div>
                         <div className="text-sm">
                           <Badge variant="secondary">{bestPass.model}</Badge>{" "}
-                          <span className="tabular-nums">{(bestPass.rate * 100).toFixed(0)}%</span>
+                          <span className="tabular-nums">
+                            {Number.isFinite(bestPass.rate)
+                              ? `${(bestPass.rate * 100).toFixed(0)}%`
+                              : "—"}
+                          </span>
                         </div>
                       </div>
                       <div className="text-right">
@@ -75,4 +88,19 @@ export default async function RunsIndex() {
       )}
     </div>
   )
+}
+
+function StatusPill({ status }: { status: "running" | "completed" | "errored" }) {
+  if (status === "running")
+    return (
+      <Badge variant="secondary" className="gap-1.5">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+        </span>
+        running
+      </Badge>
+    )
+  if (status === "errored") return <Badge variant="destructive">errored</Badge>
+  return null
 }

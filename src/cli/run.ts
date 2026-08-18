@@ -1,26 +1,19 @@
-import { promises as fs } from "node:fs"
-import path from "node:path"
-import { pathToFileURL } from "node:url"
 import { runSuite } from "@/core/runner"
+import { getSuite, listSuiteNames } from "@/evals"
 import type { EvalSuite } from "@/core/types"
-
-const EVALS_DIR = path.resolve(process.cwd(), "src/evals")
 
 function fmt(n: number, digits = 2): string {
   return n.toFixed(digits)
 }
 
-async function listSuites(): Promise<string[]> {
-  const entries = await fs.readdir(EVALS_DIR)
-  return entries.filter((f) => f.endsWith(".ts")).map((f) => f.replace(/\.ts$/, "")).sort()
-}
-
-async function loadSuite(name: string): Promise<EvalSuite> {
-  const file = path.join(EVALS_DIR, `${name}.ts`)
-  const url = pathToFileURL(file).href
-  const mod = (await import(url)) as { default: EvalSuite }
-  if (!mod.default?.name) throw new Error(`Suite ${name} has no default export EvalSuite.`)
-  return mod.default
+function loadSuite(name: string): EvalSuite {
+  const s = getSuite(name)
+  if (!s) {
+    throw new Error(
+      `Suite '${name}' not found. Known: ${listSuiteNames().join(", ") || "(none)"}. Add it to src/evals/index.ts.`,
+    )
+  }
+  return s
 }
 
 function parseArgs(argv: string[]): {
@@ -50,15 +43,14 @@ async function main() {
   const { suite: suiteName, models, limit, list } = parseArgs(process.argv)
 
   if (list || !suiteName) {
-    const suites = await listSuites()
     if (!suiteName && !list)
       console.log("Usage: pnpm eval <suite> [--models=a,b] [--limit=N]\n")
     console.log("Available suites:")
-    for (const s of suites) console.log(`  - ${s}`)
+    for (const s of listSuiteNames()) console.log(`  - ${s}`)
     return
   }
 
-  const suite = await loadSuite(suiteName)
+  const suite = loadSuite(suiteName)
   if (limit != null) suite.cases = suite.cases.slice(0, limit)
   const runModels = models ?? suite.models
   console.log(

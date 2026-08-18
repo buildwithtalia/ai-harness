@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { CaseDrawer } from "./case-drawer"
+import { AutoRefresh } from "./auto-refresh"
 import type { CaseResult, ModelId } from "@/core/types"
 
 export const dynamic = "force-dynamic"
@@ -39,15 +40,23 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
     }
   }
 
+  const totalCells = manifest.caseCount * manifest.models.length
+  const completedCells = cases.length
+  const status = manifest.status ?? "completed"
+
   return (
     <div className="mx-auto max-w-6xl px-6 py-10 space-y-6">
+      <AutoRefresh enabled={status === "running"} />
       <div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <Link href="/" className="hover:text-foreground">Runs</Link>
           <span>/</span>
           <span>{manifest.suite}</span>
         </div>
-        <h1 className="text-2xl font-semibold tracking-tight mt-1">{manifest.suite}</h1>
+        <div className="flex items-center gap-2 mt-1">
+          <h1 className="text-2xl font-semibold tracking-tight">{manifest.suite}</h1>
+          <StatusBadge status={status} />
+        </div>
         {manifest.suiteDescription && (
           <p className="text-sm text-muted-foreground mt-1">{manifest.suiteDescription}</p>
         )}
@@ -55,6 +64,27 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
           {new Date(manifest.startedAt).toLocaleString()} · {manifest.caseCount} cases · scorers:{" "}
           {manifest.scorers.join(", ")}
         </p>
+        {status === "running" && (
+          <div className="mt-3 text-xs">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <span className="tabular-nums">
+                {completedCells}/{totalCells} cells complete
+              </span>
+              <span>· refreshes every 3s</span>
+            </div>
+            <div className="mt-1.5 h-1.5 w-full max-w-md rounded bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${totalCells ? (completedCells / totalCells) * 100 : 0}%` }}
+              />
+            </div>
+          </div>
+        )}
+        {status === "errored" && manifest.error && (
+          <div className="mt-3 rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            Run errored: {manifest.error}
+          </div>
+        )}
         <div className="mt-3">
           <Link
             href={`/compare?run=${encodeURIComponent(id)}`}
@@ -145,4 +175,19 @@ export function ScoreBadge({ r }: { r: CaseResult }) {
       {r.aggregateScore.toFixed(2)}
     </Badge>
   )
+}
+
+function StatusBadge({ status }: { status: "running" | "completed" | "errored" }) {
+  if (status === "running")
+    return (
+      <Badge variant="secondary" className="gap-1.5">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
+        </span>
+        running
+      </Badge>
+    )
+  if (status === "errored") return <Badge variant="destructive">errored</Badge>
+  return <Badge variant="outline">completed</Badge>
 }

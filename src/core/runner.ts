@@ -211,82 +211,152 @@ async function runOne(
   }
 }
 
-export async function runSuite(
-  suite: EvalSuite,
-  opts: RunOptions = {},
-): Promise<RunManifest> {
-  const models = opts.modelsOverride ?? suite.models
-  const startedAt = new Date()
-  const id = runIdFor(suite.name, startedAt)
-  await ensureRunDir(id)
+function emptyAggregate() {
+  return {
+    meanScore: 0,
+    passRate: 0,
+    totalCostUsd: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    p50LatencyMs: 0,
+    p95LatencyMs: 0,
+  }
+}
 
+function aggregateFor(rs: CaseResult[]) {
+  const latencies = rs.map((r) => r.latencyMs)
+  const scores = rs.map((r) => r.aggregateScore)
+  const passes = rs.filter((r) => r.passed).length
+  return {
+    meanScore: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0,
+    passRate: rs.length ? passes / rs.length : 0,
+    totalCostUsd: rs.reduce((a, r) => a + r.costUsd, 0),
+    totalInputTokens: rs.reduce((a, r) => a + (r.usage.inputTokens ?? 0), 0),
+    totalOutputTokens: rs.reduce((a, r) => a + (r.usage.outputTokens ?? 0), 0),
+    p50LatencyMs: percentile(latencies, 50),
+    p95LatencyMs: percentile(latencies, 95),
+  }
+}
+
+async function executeRun(
+  id: string,
+  startedAt: Date,
+  suite: EvalSuite,
+  models: ModelId[],
+  opts: RunOptions,
+): Promise<RunManifest> {
   const perModelResults: Record<ModelId, CaseResult[]> = Object.fromEntries(
     models.map((m) => [m, [] as CaseResult[]]),
   )
 
-  for (const model of models) {
-    for (const ec of suite.cases) {
-      opts.onProgress?.({ type: "case-start", model, caseId: ec.id })
-      try {
-        const cr = await runOne(suite, model, ec)
-        perModelResults[model].push(cr)
-        await appendCase(id, cr)
-        opts.onProgress?.({ type: "case-done", result: cr })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        const errored: CaseResult = {
-          caseId: ec.id,
-          model,
-          latencyMs: 0,
-          usage: emptyUsage(),
-          costUsd: 0,
-          output: { text: "", toolCalls: [], steps: [], finishReason: "error", usage: emptyUsage() },
-          scores: {},
-          aggregateScore: 0,
-          passed: false,
-          error: { message, stack: err instanceof Error ? err.stack : undefined },
+  try {
+    for (const model of models) {
+      for (const ec of suite.cases) {
+        opts.onProgress?.({ type: "case-start", model, caseId: ec.id })
+        try {
+          const cr = await runOne(suite, model, ec)
+          perModelResults[model].push(cr)
+          await appendCase(id, cr)
+          opts.onProgress?.({ type: "case-done", result: cr })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          const errored: CaseResult = {
+            caseId: ec.id,
+            model,
+            latencyMs: 0,
+            usage: emptyUsage(),
+            costUsd: 0,
+            output: { text: "", toolCalls: [], steps: [], finishReason: "error", usage: emptyUsage() },
+            scores: {},
+            aggregateScore: 0,
+            passed: false,
+            error: { message, stack: err instanceof Error ? err.stack : undefined },
+          }
+          perModelResults[model].push(errored)
+          await appendCase(id, errored)
+          opts.onProgress?.({ type: "case-error", model, caseId: ec.id, error: message })
         }
-        perModelResults[model].push(errored)
-        await appendCase(id, errored)
-        opts.onProgress?.({ type: "case-error", model, caseId: ec.id, error: message })
       }
     }
-  }
 
-  const manifest: RunManifest = {
+    const manifest: RunManifest = {
+      id,
+      suite: suite.name,
+      suiteDescription: suite.description,
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "completed",
+      models,
+      caseCount: suite.cases.length,
+      scorers: suite.scorers.map((s) => s.name),
+      aggregate: {
+        perModel: Object.fromEntries(
+          models.map((m) => [m, aggregateFor(perModelResults[m])]),
+        ),
+      },
+    }
+    await writeManifest(id, manifest)
+    return manifest
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const manifest: RunManifest = {
+      id,
+      suite: suite.name,
+      suiteDescription: suite.description,
+      startedAt: startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      status: "errored",
+      error: message,
+      models,
+      caseCount: suite.cases.length,
+      scorers: suite.scorers.map((s) => s.name),
+      aggregate: {
+        perModel: Object.fromEntries(
+          models.map((m) => [m, aggregateFor(perModelResults[m] ?? [])]),
+        ),
+      },
+    }
+    await writeManifest(id, manifest)
+    throw err
+  }
+}
+
+/**
+ * Start a suite run: create the run directory, write an initial manifest
+ * with status="running", and return the run id + a promise that resolves
+ * to the final manifest. Server actions call this and can redirect on the
+ * id without awaiting the promise.
+ */
+export async function beginRun(
+  suite: EvalSuite,
+  opts: RunOptions = {},
+): Promise<{ id: string; done: Promise<RunManifest> }> {
+  const models = opts.modelsOverride ?? suite.models
+  const startedAt = new Date()
+  const id = runIdFor(suite.name, startedAt)
+  await ensureRunDir(id)
+  const initial: RunManifest = {
     id,
     suite: suite.name,
     suiteDescription: suite.description,
     startedAt: startedAt.toISOString(),
-    finishedAt: new Date().toISOString(),
+    status: "running",
     models,
     caseCount: suite.cases.length,
     scorers: suite.scorers.map((s) => s.name),
     aggregate: {
-      perModel: Object.fromEntries(
-        models.map((m) => {
-          const rs = perModelResults[m]
-          const latencies = rs.map((r) => r.latencyMs)
-          const scores = rs.map((r) => r.aggregateScore)
-          const passes = rs.filter((r) => r.passed).length
-          return [
-            m,
-            {
-              meanScore: scores.length
-                ? scores.reduce((a, b) => a + b, 0) / scores.length
-                : 0,
-              passRate: rs.length ? passes / rs.length : 0,
-              totalCostUsd: rs.reduce((a, r) => a + r.costUsd, 0),
-              totalInputTokens: rs.reduce((a, r) => a + (r.usage.inputTokens ?? 0), 0),
-              totalOutputTokens: rs.reduce((a, r) => a + (r.usage.outputTokens ?? 0), 0),
-              p50LatencyMs: percentile(latencies, 50),
-              p95LatencyMs: percentile(latencies, 95),
-            },
-          ]
-        }),
-      ),
+      perModel: Object.fromEntries(models.map((m) => [m, emptyAggregate()])),
     },
   }
-  await writeManifest(id, manifest)
-  return manifest
+  await writeManifest(id, initial)
+  const done = executeRun(id, startedAt, suite, models, opts)
+  return { id, done }
+}
+
+export async function runSuite(
+  suite: EvalSuite,
+  opts: RunOptions = {},
+): Promise<RunManifest> {
+  const { done } = await beginRun(suite, opts)
+  return done
 }
