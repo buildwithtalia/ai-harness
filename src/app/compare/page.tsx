@@ -3,6 +3,7 @@ import { listRuns, readCases, readManifest } from "@/core/artifacts"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { CompareChart } from "./compare-chart"
+import { buildMatrixRows, ContextGraphDeltaMatrix, MetricsMatrix } from "./metrics-matrix"
 import type { CaseResult } from "@/core/types"
 
 export const dynamic = "force-dynamic"
@@ -76,6 +77,10 @@ export default async function ComparePage(props: PageProps<"/compare">) {
           ))}
         </div>
       </div>
+
+      <MetricsMatrix rows={buildMatrixRows(manifest, cases)} />
+
+      <ContextGraphDeltaMatrix rows={buildMatrixRows(manifest, cases)} />
 
       <CompareChart data={chartData} />
 
