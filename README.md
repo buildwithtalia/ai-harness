@@ -261,29 +261,38 @@ Both currently stubs — they read their own env vars, POST `{ prompt, repoUrl, 
 
 ## Prompts
 
-The suite `agent-benchmark` (`src/evals/agent-benchmark.ts`) currently ships **12 prompts** across three categories.
+The suite `agent-benchmark` (`src/evals/agent-benchmark.ts`) ships **12 base prompts × 2 fixture repos = 24 cases** in every run. Every prompt is rewritten to be domain-neutral so the same text applies to either fixture.
 
-### Build (5)
+### Fixture repos
 
-| Case id | Difficulty | Axes | Focus |
+| Suffix | Repo | Character |
+|---|---|---|
+| `-hc` | [`healthcare-org-app/healthcare-infra`](https://github.com/healthcare-org-app/healthcare-infra) | Private-app-shaped (drives myhealthcare.dev). |
+| `-gr` | [`grafana/grafana`](https://github.com/grafana/grafana) | Large open-source monitoring platform. |
+
+Case ids are `<category>-<NN>-<subtask>-<fixture>` (e.g. `build-01-add-field-to-api-hc`, `build-01-add-field-to-api-gr`). Each row in the case matrix on `/runs/[id]` and `/compare` is one `(prompt, fixture)` pair; running the whole suite fills 24 rows per column (per target).
+
+### Build (5 base prompts, ×2 fixtures = 10 cases)
+
+| Base id | Difficulty | Axes | Focus |
 |---|---|---|---|
-| `build-01-add-api-field` | easy | schema_repair, multistep | Add `preferred_language` to the User API end-to-end (validation, tests, docs, migration). Ships **deterministic ground truth**: must-mention `preferred_language` / `639` / `'en'`, regex checks for migration + rollback, and a JSON structured-output schema. |
+| `build-01-add-field-to-api` | easy | schema_repair, multistep | Add `preferred_language` to the User API end-to-end (validation, tests, docs, migration). Ships **deterministic ground truth**: must-mention `preferred_language` / `639` / `'en'`, regex checks for migration + rollback, and a JSON structured-output schema. |
 | `build-02-add-service` | medium | discovery, multistep, statefulness | Carve `notification-preferences` out into a new service that emits `preferences.updated`. |
 | `build-03-v1-to-v2-migration` | hard | schema_repair, multistep, error_recovery | Migrate the public API from v1 to v2 (camelCase, cursor pagination, RFC 9457). |
 | `build-04-refactor` | medium | discovery, multistep | Extract auth / rate-limiting / logging / tracing into composable middleware. |
-| `build-05-auth-update` | hard | authentication, multistep, statefulness | Replace HMAC cookies with OAuth 2.1 + PKCE; keep API-key M2M. Cover migration of live sessions. |
+| `build-05-auth-change` | hard | authentication, multistep, statefulness | Replace HMAC cookies with OAuth 2.1 + PKCE; keep API-key M2M. Migrate active sessions without dropping requests. |
 
-### Find (3)
+### Find (3 base prompts, ×2 fixtures = 6 cases)
 
-| Case id | Difficulty | Axes | Focus |
+| Base id | Difficulty | Axes | Focus |
 |---|---|---|---|
-| `find-01-api-down-blast-radius` | hard | impact_analysis, error_recovery, discovery, statefulness | `payments-api` down — root cause + downstream blast radius. |
-| `find-02-trace-value` | medium | impact_analysis, multistep, docs_alignment | Trace `billing_address` from checkout to invoice through every transformation and store. |
+| `find-01-api-down-root-cause` | hard | impact_analysis, error_recovery, discovery, statefulness | `payments-api` down — root cause + downstream blast radius. |
+| `find-02-trace-value` | medium | impact_analysis, multistep, docs_alignment | Trace `notification_email` from account settings through the system, database, and downstream services. |
 | `find-03-db-change-blast-radius` | hard | impact_analysis, schema_repair, multistep | `orders.customer_id` INT → UUID: enumerate every consumer + rollout plan. |
 
-### Ask (4)
+### Ask (4 base prompts, ×2 fixtures = 8 cases)
 
-| Case id | Difficulty | Axes | Focus |
+| Base id | Difficulty | Axes | Focus |
 |---|---|---|---|
 | `ask-01-three-way-drift` | medium | docs_alignment, discovery | Spec vs collection vs code drift audit. |
 | `ask-02-most-dependencies` | easy | discovery, impact_analysis | Top-5 endpoints by dependency count + call graph for #1. Ships **deterministic ground truth**: JSON schema requiring exactly 5 endpoints with counts + a non-empty call graph. |
@@ -699,7 +708,7 @@ The public [`postmanlabs/APIFlow-Bench`](https://github.com/postmanlabs/APIFlow-
 
 Everything below is scaffolded but stubbed / provisional. The wiring is in place so filling each item in is a small localized change.
 
-- **Finalize prompts** — the 12 currently in `agent-benchmark.ts` are the initial draft. Waiting on final wording and any additional cases. All 12 point at `github.com/healthcare-org-app/healthcare-infra` as their `context.repoUrl`. Additional fixture repos will let prompts get retargeted per case; Cursor consumes the URL directly via its adapter, other agents receive it as text.
+- **Finalize prompts** — the 12 base prompts in `agent-benchmark.ts` fan out across two fixture repos (`healthcare-org-app/healthcare-infra` and `grafana/grafana`) for 24 cases per run. Waiting on final prompt wording and any additional cases. Additional fixture repos slot in via the `FIXTURES` array in the suite file. Cursor consumes each case's `context.repoUrl` directly via its adapter (v1 Cloud Agents API); Claude, Codex, and Devin receive the URL as text in the prompt.
 - **Finalize agent adapter details** —
   - `claude` and `codex` model ids to lock in.
   - `devin` — confirm `POST /v1/sessions` shape and session-title conventions.
