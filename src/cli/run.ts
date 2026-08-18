@@ -23,33 +23,47 @@ async function loadSuite(name: string): Promise<EvalSuite> {
   return mod.default
 }
 
-function parseArgs(argv: string[]): { suite?: string; models?: string[]; list: boolean } {
+function parseArgs(argv: string[]): {
+  suite?: string
+  models?: string[]
+  limit?: number
+  list: boolean
+} {
   const args = argv.slice(2)
   let suite: string | undefined
   let models: string[] | undefined
+  let limit: number | undefined
   let list = false
   for (const a of args) {
     if (a === "--list") list = true
-    else if (a.startsWith("--models=")) models = a.slice("--models=".length).split(",").map((s) => s.trim()).filter(Boolean)
-    else if (!a.startsWith("--")) suite = a
+    else if (a.startsWith("--models="))
+      models = a.slice("--models=".length).split(",").map((s) => s.trim()).filter(Boolean)
+    else if (a.startsWith("--limit=")) {
+      const n = Number(a.slice("--limit=".length))
+      if (Number.isFinite(n) && n > 0) limit = Math.floor(n)
+    } else if (!a.startsWith("--")) suite = a
   }
-  return { suite, models, list }
+  return { suite, models, limit, list }
 }
 
 async function main() {
-  const { suite: suiteName, models, list } = parseArgs(process.argv)
+  const { suite: suiteName, models, limit, list } = parseArgs(process.argv)
 
   if (list || !suiteName) {
     const suites = await listSuites()
-    if (!suiteName && !list) console.log("Usage: pnpm eval <suite> [--models=a,b]\n")
+    if (!suiteName && !list)
+      console.log("Usage: pnpm eval <suite> [--models=a,b] [--limit=N]\n")
     console.log("Available suites:")
     for (const s of suites) console.log(`  - ${s}`)
     return
   }
 
   const suite = await loadSuite(suiteName)
+  if (limit != null) suite.cases = suite.cases.slice(0, limit)
   const runModels = models ?? suite.models
-  console.log(`Running suite '${suite.name}' with ${suite.cases.length} cases across ${runModels.length} models…\n`)
+  console.log(
+    `Running suite '${suite.name}' with ${suite.cases.length} cases across ${runModels.length} models${limit != null ? ` (--limit=${limit})` : ""}…\n`,
+  )
 
   const manifest = await runSuite(suite, {
     modelsOverride: models,

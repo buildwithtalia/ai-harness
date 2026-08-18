@@ -1,0 +1,43 @@
+name: pr-eval-smoke
+
+on:
+  pull_request:
+    paths:
+      - 'src/evals/**'
+      - '.github/workflows/pr-eval-smoke.yml'
+
+concurrency:
+  group: pr-eval-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Smoke run only exercises the AI-Gateway-backed adapters (claude, codex)
+      # to keep PR cost low and avoid paid Devin/Cursor credits on every push.
+      AI_GATEWAY_API_KEY:      ${{ secrets.AI_GATEWAY_API_KEY }}
+      CONTEXT_GRAPH_API_URL:   ${{ secrets.CONTEXT_GRAPH_API_URL }}
+      CONTEXT_GRAPH_API_KEY:   ${{ secrets.CONTEXT_GRAPH_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Smoke run — 2 cases × claude vs claude+cg
+        run: pnpm eval agent-benchmark --limit=2 --models=claude,claude+cg
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-smoke-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          path: runs/
+          retention-days: 7

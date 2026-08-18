@@ -41,6 +41,24 @@ pnpm eval agent-benchmark --models=claude,claude+cg   # scope to a pair
 pnpm eval:list                          # list available suites
 ```
 
+## Continuous integration
+
+Two GitHub Actions workflows live under `.github/workflows/`:
+
+- **`eval-nightly.yml`** — runs `pnpm eval agent-benchmark` at 07:00 UTC daily on `main` (also `workflow_dispatch`). Uploads `runs/<id>/` as a 30-day artifact, then invokes `scripts/check-regression.mjs`, which compares the current run's mean pass rate against `results/nightly-baseline.json`. If the drop exceeds 5 percentage points, the script opens a `regression`-labeled issue. The baseline file is always updated to the latest run and committed back to `main` with `[skip ci]`.
+- **`pr-eval-smoke.yml`** — triggers on pull requests that touch `src/evals/**`. Runs the first 2 cases against `claude` and `claude+cg` only (no paid Devin/Cursor sessions on every push) via `pnpm eval agent-benchmark --limit=2 --models=claude,claude+cg`. Artifacts retained 7 days.
+
+Required repo secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Used by |
+|---|---|
+| `AI_GATEWAY_API_KEY` | nightly + PR smoke |
+| `DEVIN_API_KEY` | nightly |
+| `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | nightly |
+| `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | nightly + PR smoke (only if `+cg` targets should run; unset ⇒ `+cg` cases error and the rest still run) |
+
+`GITHUB_TOKEN` is auto-provided; no manual issuance needed for opening the regression issue or committing the baseline.
+
 Environment variables:
 
 | Variable | Needed for |
