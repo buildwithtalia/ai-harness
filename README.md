@@ -2,93 +2,108 @@
 
 An eval harness for measuring **agent × model × context** on realistic engineering tasks. Every run is a matrix over three axes:
 
-- **Agents** (products) — Claude Code, Devin, Cursor, Codex.
-- **Models** — for agents that route through the AI Gateway (Claude, Codex) the underlying model can be swapped at run time (`anthropic/claude-opus-4-7` vs `-sonnet-4-5` vs `-haiku-4-5`, and the Codex family); Devin and Cursor pin to their own routing.
-- **Context providers** — any provider registered under `src/core/context-providers/` (Context Graph, Orbit, …), plus a "no provider" baseline.
+- **Agents** — coding-agent products (Claude Code, Devin, Cursor, Codex).
+- **Models** — the underlying LLM for agents that expose it (Claude, Codex go through the Vercel AI Gateway; Devin and Cursor pin to their own routing).
+- **Context providers** — pluggable retrieval layers registered under `src/core/context-providers/` (Context Graph, Orbit, whatever ships next), plus a "no provider" baseline.
 
-Every output is scored with a deterministic checker + an LLM judge on category-specific rubrics. Results land as JSONL artifacts and render in a Next.js dashboard with a metrics matrix that has explicit Agent / Model / Provider columns and a delta table that pairs each `+provider` run against the baseline for the **same (agent, model)** pair.
+Every output is graded by a **deterministic checker + an LLM judge on category-specific rubrics**. Results land as JSONL artifacts and render in a Next.js dashboard with a metrics matrix (Agent / Model / Provider columns, best-cell highlighting) and a delta table that pairs each `+provider` run against the baseline for the **same `(agent, model)`** pair. Every completed run also emits `results/skill-input.json` for the [release-autopilot skill](#release-autopilot-skill-handshake).
 
-## How it works
+## Contents
+
+- [Concepts](#concepts) — targets, suites, cases, capability axes, difficulty, ground truth
+- [How a run executes](#how-a-run-executes) — lifecycle, sequencing, progress, error boundaries
+- [Agents](#agents) — what each adapter calls, env vars, timeouts, model rules
+- [Models](#models) — catalog, override syntax, cost table
+- [Context providers](#context-providers) — the interface, the two current stubs, adding a new one
+- [Prompts](#prompts) — the 12 cases in `agent-benchmark`, categories, tickets, ground truth
+- [Scoring](#scoring) — deterministic checks + LLM judge rubrics + aggregation
+- [Dashboard](#dashboard) — every route in detail
+- [CLI](#cli)
+- [Editing prompts](#editing-prompts) — the overlay flow
+- [Artifacts on disk](#artifacts-on-disk) — `runs/<id>/`, `results/`
+- [Release-autopilot skill handshake](#release-autopilot-skill-handshake) — two directions
+- [Continuous integration](#continuous-integration) — three workflows
+- [Environment variables and secrets](#environment-variables-and-secrets)
+- [Extending](#extending) — add an agent, model, provider, prompt, scorer
+- [Design references](#design-references)
+- [Waiting on](#waiting-on)
+- [Repo layout](#repo-layout)
+
+## Concepts
+
+### Target-id grammar
+
+Every column in a run — whether it's a bare agent, a specific model override, a composed provider variant, or a raw AI-Gateway call — is one string, called a **target id**. Grammar:
 
 ```
-┌──────────────┐   ┌──────────────┐   ┌─────────────┐   ┌───────────────┐
-│  Eval suite  │──▶│    Runner    │──▶│   Adapters  │──▶│  Model / API  │
-│  (prompts    │   │  (src/core)  │   │ base +      │   │  AI Gateway,  │
-│   + tickets) │   │              │   │ withProvider│   │  Devin API,   │
-│              │   │              │   │             │   │  Cursor API   │
-└──────┬───────┘   └──────┬───────┘   └─────────────┘   └───────────────┘
-       │                  │                  │
-       │                  ▼                  ▼
-       │            ┌──────────────┐   ┌─────────────────┐
-       │            │   Scorers    │   │ Context providers│
-       │            │  det. +      │   │   cg · orbit ·   │
-       │            │  llmJudge    │   │   (registry)     │
-       │            └──────┬───────┘   └─────────────────┘
-       │                   │
-       │                   ▼
-       │             ┌──────────────┐   ┌───────────────┐   ┌──────────────┐
-       │             │  runs/<id>/  │──▶│   Dashboard   │   │ skill-hook   │
-       │             │  JSONL       │   │  (Next.js)    │   │ POST + JSON  │
-       │             └──────────────┘   └───────────────┘   └──────────────┘
-       │                                        │                  │
-       ▼                                        ▼                  ▼
-┌───────────────┐                       / · /runs/[id]     results/skill-input.json
-│ /prompts (UI) │                       /compare · /new       + SKILL_WEBHOOK_URL
-│  overlay JSON │
-└───────────────┘
+<base>[@<model>][+<providerId>]
 ```
 
-1. **A suite** (`src/evals/agent-benchmark.ts`) is a list of prompts + rubric(s) + a list of target ids. Target-id grammar:
+- `<base>` is either a coding-agent id (`claude`, `devin`, `cursor`, `codex`) or a raw AI-Gateway model string that starts with `<provider>/…` (`anthropic/claude-opus-4-7`, `openai/gpt-5`). Raw-model targets skip the adapter and go through `generateText` directly.
+- `@<model>` optionally overrides the adapter's default model. Only supported by agents that route through the AI Gateway (`claude`, `codex`). `<devin|cursor>@<model>` is rejected with a clear error.
+- `+<providerId>` composes the target with a registered context provider. Slug regex `^[a-z0-9][a-z0-9_-]*$` so the parser can safely split on the last `+`.
 
-   ```
-   <base>[@<model>][+<providerId>]
-   ```
+Examples parsed by `src/core/agents/parse-target.ts`:
 
-   - `<base>` is either a coding-agent id (`claude`, `devin`, `cursor`, `codex`) or a raw AI-Gateway model string (`anthropic/claude-opus-4-7`, `openai/gpt-5`).
-   - `@<model>` optionally overrides the adapter's default model. Only supported by agents that route through the AI Gateway (`claude`, `codex`); Devin and Cursor pin to their own routing.
-   - `+<providerId>` composes the target with a registered context provider (`cg` for Context Graph, `orbit` for Orbit).
+| Target id | Base | Model | Provider |
+|---|---|---|---|
+| `claude` | claude | — | — |
+| `claude@anthropic/claude-sonnet-4-5` | claude | anthropic/claude-sonnet-4-5 | — |
+| `claude+cg` | claude | — | cg |
+| `claude@anthropic/claude-sonnet-4-5+orbit` | claude | anthropic/claude-sonnet-4-5 | orbit |
+| `devin+cg` | devin | — | cg |
+| `anthropic/claude-opus-4-7` | (raw model) | anthropic/claude-opus-4-7 | — |
 
-   Examples: `claude`, `claude@anthropic/claude-sonnet-4-5`, `claude+cg`, `claude@anthropic/claude-sonnet-4-5+orbit`, `devin+cg`. The registry (`src/core/agents/`) resolves an id lazily via `parseTargetId` + adapter factories (`createClaudeAdapter(model)`, `createCodexAdapter(model)`), so the cross product isn't materialised — only the ids you actually ask for exist.
+Resolution is lazy — `getAgent(id)` (in `src/core/agents/index.ts`) parses the id at call time, calls `createClaudeAdapter(model)` / `createCodexAdapter(model)`, and wraps with `withProvider(adapter, provider)` if a provider was requested. The full cross product isn't materialised.
 
-   Prompts are framed **APIFlow-Bench-style** — each case has a `ticket` block (broken call + error hint + ask) that the runner prepends to the input, so the agent reads a realistic dev ticket instead of a clean prompt.
-2. **The runner** (`src/core/runner.ts`) iterates over `(target × case)`. If the target is an agent id it dispatches through an adapter under `src/core/agents/`; otherwise it calls `generateText` on the underlying model. Latency, tokens, and cost are captured per call.
-3. **Adapters** wrap the real agent APIs — Vercel AI Gateway for Claude and Codex; `api.devin.ai/v1/sessions` for Devin; `api.cursor.com/v0/agents` for Cursor. Composed variants like `claude+cg` or `claude+orbit` are produced generically by `withProvider(baseAdapter, provider)` in `src/core/agents/with-provider.ts`: it calls the provider's `query(prompt, repoUrl, repoPath)`, prepends the returned documents/summary as extra context, and delegates to the underlying adapter — so latency and quality are directly comparable across providers.
-4. **Scorers** (`src/core/scorers/`) grade each output. `agent-benchmark` runs two in parallel per case:
-   - **`deterministic()`** — APIFlow-Bench "grade the result, not the answer string." Each case can declare a `groundTruth.checks[]` list; the scorer runs mechanical checks (`must-mention`, `must-not-mention`, `regex`, `structured-output` with a Zod schema, or a `custom` async callback) and scores by fraction passed. Cases without `groundTruth` return `score: null` and are skipped from the aggregate (letting the LLM judge stand alone). See `src/core/scorers/deterministic.ts`.
-   - **`llmJudge()`** with **category-specific rubrics** — separate 5-dimension scorecards for `build`, `find`, and `ask`, resolved per-case via `suite.rubricsByCategory`. Every dimension score is preserved in `scores.llmJudge.details.dimensions` and surfaced in the dashboard case drawer.
+### Suite, case, capability axis, difficulty
 
-   Other scorers exist for exact/regex/tool-trace evals.
-5. **Artifacts** land in `runs/<ISO>__<suite>/` as `manifest.json` + `cases.jsonl` (one row per `(target, case)`). Each case row also carries `category`, `difficulty` (`easy` / `medium` / `hard`), `capabilityAxis[]` (APIFlow-Bench-style tags: `authentication`, `discovery`, `schema_repair`, `multistep`, `error_recovery`, `pagination`, `statefulness`, `impact_analysis`, `docs_alignment`, `security_review`), and `diagnostics` (CodeGraph-style orientation metrics: `toolCallCount`, `stepCount`, and — for composed targets — `providerId`, `providerLatencyMs`, `providerDocumentCount`). The directory is gitignored.
-6. **The dashboard** (`src/app/`) is a Next.js App Router app that reads `runs/` via `fs/promises`. Routes:
-   - `/` — runs index with per-row status pill (`running` / `errored` / done) and a **New run** button.
-   - `/runs/[id]` — model aggregates, a case × target matrix, and a per-case drawer showing dimensions, ground-truth check breakdown, tool calls, and diagnostics. While `status === "running"` the page auto-refreshes every 3 s so cells appear as they complete.
-   - `/compare?run=<id>` — **Metrics matrix** (all targets × pass / score / cost / p50 / p95 / per-category rollups; best cell per column highlighted) + **Context-provider delta** table (one row per `(agent, provider)` pair, green when the provider moved the metric in the desired direction) + quality/cost/latency bar charts + a disagreement table.
-   - `/prompts` — edit the ticket / input / context / difficulty / capability tags for each case. Edits persist to a git-tracked JSON overlay (`data/prompt-overrides.json`) that the runner reads through, so changes take effect on the next run without a rebuild.
-   - `/new` — two-level selector (agents × context providers, plus an "include baseline" toggle) with a live preview of the computed target list, then kicks off a run via a server action.
-7. **The skill hook** (`src/core/skill-hook.ts`) fires at the end of every run — CLI, `/new`, workflows — writing a normalised summary to `results/skill-input.json` and, if `SKILL_WEBHOOK_URL` is set, POSTing it to the release-autopilot skill. Details in the *Release-autopilot skill handshake* section below.
+A **suite** (currently just `agent-benchmark`, defined in `src/evals/agent-benchmark.ts`) is:
+
+- A `name` + `description`.
+- `models: string[]` — default target list (overridable at run time via `/new`, `--models=`, or a workflow input).
+- `cases: EvalCase[]` — the prompt list.
+- `system: string` — a suite-wide system prompt injected before every call.
+- `scorers: Scorer[]` — currently `[deterministic(), llmJudge()]`.
+- `judgeModel` + `rubricsByCategory` — LLM judge configuration (see [Scoring](#scoring)).
+
+Each `EvalCase` carries:
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable identifier (used to key overlay edits and result artifacts). |
+| `input` | The ask itself — the model's user message. Currently always a string. |
+| `ticket` | **APIFlow-Bench-style failure-first framing** prepended to `input`: broken call + error hint + dev-ticket wrapper. |
+| `metadata.category` | `build` / `find` / `ask` — routes to the right judge rubric. |
+| `difficulty` | `easy` / `medium` / `hard`. |
+| `capabilityAxis[]` | Free-form tags. Ten common ones defined: `authentication`, `discovery`, `schema_repair`, `multistep`, `error_recovery`, `pagination`, `statefulness`, `impact_analysis`, `docs_alignment`, `security_review`. |
+| `context` | `{ text?, repoPath?, repoUrl? }` — repo the case operates against. Currently every case points at `github.com/healthcare-org-app/healthcare-infra`. |
+| `groundTruth` | Optional deterministic checks (see [Scoring](#scoring)). |
+| `judgeRubric` | Optional per-case rubric override; if unset, the runner falls back to `suite.rubricsByCategory[category]` → `suite.judgeRubric`. |
+
+### The three axes, together
+
+Every cell in a run corresponds to one **`(target, case)`** pair, where a target is a parsed `(agent, model, providerId)` triple. So a "12 cases × 8 targets" run is 96 cells. Each cell is one adapter call + one deterministic pass + one LLM-judge call.
 
 ## How a run executes
 
-A run is a nested `for (target) × for (case)` loop with per-cell error containment. Each cell is one adapter call plus scoring.
+A run is a nested `for (target) × for (case)` loop with per-cell error containment. Each cell is one adapter call plus scoring. Runner in `src/core/runner.ts`.
 
 ### Lifecycle
 
-1. **`beginRun(suite, opts)`** (`src/core/runner.ts`):
-   - Generates a run id: `<ISO timestamp>__<suite name>`, e.g. `2026-08-18T14-03-19-482Z__agent-benchmark`.
-   - Creates `runs/<id>/` and writes an **initial** `manifest.json` with `status: "running"` and empty per-model aggregates. This is what the dashboard picks up so it can render the run while it's still in flight.
-   - Returns `{ id, done: Promise<RunManifest> }`. The server action (`/new`) grabs the id and redirects immediately; the promise runs as background work.
+1. **`beginRun(suite, opts)`** — generates a run id `<ISO timestamp>__<suite name>` (e.g. `2026-08-18T14-03-19-482Z__agent-benchmark`), creates `runs/<id>/`, writes an **initial** `manifest.json` with `status: "running"`, and returns `{ id, done: Promise<RunManifest> }`. The server action for `/new` grabs the id and redirects immediately; the promise runs as background work.
 2. **`executeRun(id, suite, models, opts)`** loops:
-   - For each model in `opts.modelsOverride ?? suite.models`
+   - For each target in `opts.modelsOverride ?? suite.models`
      - For each case in `suite.cases` (already trimmed by `--limit` if the CLI or `/new` form set one)
-       - **Emit `case-start`** (progress hook, streamed to the CLI or `onProgress` caller).
+       - Emit `case-start` (progress hook, streamed to the CLI or `onProgress` caller).
        - Compose the prompt: if the case has a `ticket`, prepend it to the input. For agent targets the `AgentContext` is built with `contextText`, `contextRepoPath`, and `contextRepoUrl` from `case.context`.
-       - **Call the target** — agent adapter (`getAgent(id).run(ctx)`) or `generateText(getModel(id), …)` for raw models. Adapters block on their real APIs (Devin/Cursor sessions can take minutes; the runner polls them internally).
-       - **Time the call** with `performance.now()`; capture `usage` (input/output tokens) and pass it to `estimateCostUsd(target, usage)` for a dollar figure. `latencyMs` for a composed target *includes* the provider lookup — the provider portion is broken out into `diagnostics.providerLatencyMs` so you can subtract it.
-       - **Run every scorer** on the output. Rubric resolution order for the LLM judge: `case.judgeRubric` → `suite.rubricsByCategory[case.metadata.category]` → `suite.judgeRubric`.
-       - **Aggregate** the scorer scores. `aggregateScore = mean(scores.filter(s => s !== null))`. `passed = aggregateScore >= 0.5`.
-       - **Append** the resulting `CaseResult` as a single JSONL line to `runs/<id>/cases.jsonl`.
-       - **Emit `case-done`** (or `case-error` if the adapter threw — the errored case is still appended with `error.message` and 0 scores so nothing goes missing).
-   - Compute per-model aggregates over the collected results (see the schema below), rewrite `manifest.json` with `status: "completed"` and `finishedAt`, then call `notifySkill(manifest, cases)` (`src/core/skill-hook.ts`) which writes `results/skill-input.json` and, if configured, POSTs it to `SKILL_WEBHOOK_URL`. If anything above throws at the loop level, the runner writes `status: "errored"` + `error` and re-throws (the skill hook is skipped on error).
+       - Call the target — agent adapter (`getAgent(id).run(ctx)`) or `generateText(getModel(id), …)` for raw models. Adapters block on their real APIs (Devin/Cursor sessions can take minutes; the runner polls them internally).
+       - Time the call with `performance.now()`; capture `usage` (input/output tokens) and pass it to `estimateCostUsd(target, usage)` for a dollar figure. `latencyMs` for a composed target *includes* the provider lookup — the provider portion is broken out into `diagnostics.providerLatencyMs`.
+       - Run every scorer. Rubric resolution order: `case.judgeRubric` → `suite.rubricsByCategory[case.metadata.category]` → `suite.judgeRubric`.
+       - Aggregate: `aggregateScore = mean(scores.filter(s => s !== null))`. `passed = aggregateScore >= 0.5`.
+       - Append the `CaseResult` as one JSONL line to `runs/<id>/cases.jsonl`.
+       - Emit `case-done` (or `case-error` if the adapter threw — the errored case is still appended with `error.message` and 0 scores).
+   - Compute per-model aggregates over the collected results, rewrite `manifest.json` with `status: "completed"` and `finishedAt`, then call `notifySkill(manifest, cases)` (`src/core/skill-hook.ts`). If anything above throws at the loop level, the runner writes `status: "errored"` + `error` and re-throws (skill hook is skipped on error).
 
 ### Sequencing choice: targets outer, cases inner
 
@@ -96,68 +111,257 @@ The loop is `for (target) for (case)`, not the other way around. Consequences wo
 
 - All of a target's cases run contiguously. If Devin's API is being flaky, you see it as a block of errors rather than sprinkled across the matrix.
 - The dashboard's case matrix fills column-by-column as the run progresses. You can watch one target complete, then start seeing the next column populate.
-- No parallelism today — this is deliberately conservative to keep API cost and rate-limit exposure predictable. Parallelising with a concurrency cap + backoff is one of the queued improvements.
+- No parallelism today — this is deliberately conservative to keep API cost and rate-limit exposure predictable.
 
 ### Progress signals
 
 - **CLI** — the `onProgress` callback prints one line per case: `· <target> :: <caseId> … PASS score=… lat=…ms $…`.
-- **Dashboard** — the run detail page (`/runs/[id]`) uses a client `AutoRefresh` component that calls `router.refresh()` every 3 seconds while `manifest.status === "running"`. Each refresh rereads `manifest.json` and `cases.jsonl`, so newly-completed cells appear on the next tick. When `status` flips to `completed` or `errored`, the auto-refresh stops.
+- **Dashboard** — `/runs/[id]` uses a client `AutoRefresh` component that calls `router.refresh()` every 3 seconds while `manifest.status === "running"`. Each refresh re-reads `manifest.json` and `cases.jsonl`, so newly-completed cells appear on the next tick. When `status` flips to `completed` or `errored`, the auto-refresh stops.
 
 ### Error boundaries
 
 Three levels, in increasing scope:
 
 1. **Per case** — an adapter throw doesn't fail the run. The case row records `error.message` and `error.stack`, `aggregateScore = 0`, `passed = false`. The loop continues.
-2. **Per scorer** — a scorer throw is *not* caught today (would crash the case). The realistic failure modes here are the judge model 429ing or a Zod parse of a `structured-output` check failing — the latter is a check failure, not a scorer throw, so it's already handled. If a judge does 429, wrap `llmJudge()` in a retry (not implemented; noted as a follow-up).
+2. **Per scorer** — a scorer throw is *not* caught today (would crash the case). The realistic failure modes here are the judge model 429ing or a Zod parse of a `structured-output` check failing — the latter is a check failure, not a scorer throw, so it's already handled.
 3. **Per run** — a top-level throw (e.g. filesystem write failure) marks the manifest `errored` and re-throws so the CLI exits non-zero and the server action logs it.
 
-## How grading works
+## Agents
 
-Two scorers run on every case in `agent-benchmark`; the case's `aggregateScore` is the mean of their non-null scores.
+Four adapters live under `src/core/agents/`. Each conforms to `AgentAdapter` in `src/core/agents/types.ts`:
 
-### 1. `deterministic()` — mechanical checks against the output
+```ts
+{
+  id: string
+  displayName: string
+  requiredEnv: string[]
+  run(ctx: AgentContext): Promise<AgentOutput>
+}
+```
 
-Implements APIFlow-Bench's "grade the result, not the answer string" principle. Each case can declare a `groundTruth.checks[]` list. The scorer runs every check, records pass/fail + details, and returns `score = passed / total`.
+### claude — Claude Code
 
-The five check types (`src/core/scorers/deterministic.ts`):
+`src/core/agents/claude.ts`. Factory: `createClaudeAdapter(model?: string)`.
+
+- **Transport** — Vercel AI Gateway via `ai` v7's `generateText(gateway(model))`.
+- **Default model** — `anthropic/claude-opus-4-7`.
+- **Model override** — any target `claude@<gateway-model-id>` swaps the model.
+- **System prompt** — "You are Claude, an expert software engineer. Read the task carefully. If a codebase is referenced, describe what you would inspect and change. Produce a concrete, structured answer: numbered steps, file paths where possible, and a risk section." Overridable per suite via `suite.system`.
+- **Env** — `AI_GATEWAY_API_KEY`.
+- **Returned meta** — `{ model, finishReason }`.
+
+### codex — OpenAI Codex
+
+`src/core/agents/codex.ts`. Factory: `createCodexAdapter(model?: string)`.
+
+- **Transport** — Vercel AI Gateway.
+- **Default model** — `openai/gpt-5-codex`. **Fallback** — `openai/gpt-5` (used automatically if the primary rejects the call).
+- **System prompt** — Codex-shaped: "produce concrete, executable steps: file-level edits, commands to run, and verification checkpoints. Be terse where possible; show diffs or file paths, not prose."
+- **Env** — `AI_GATEWAY_API_KEY`.
+- **Returned meta** — `{ model, finishReason, fallbackReason? }`.
+
+### devin — Devin (Cognition Labs)
+
+`src/core/agents/devin.ts`. No model override — Devin picks its own model per session.
+
+- **Transport** — direct HTTP against `https://api.devin.ai/v1` (override with `DEVIN_API_BASE`).
+- **Flow** —
+  1. `POST /sessions` with `{ prompt, idempotent: true, title }`.
+  2. Poll `GET /session/<id>` every **5 s** up to **30 min**.
+  3. Terminate on `status_enum ∈ { finished, stopped, blocked }`.
+  4. Extract the final text from the last non-user message, else from `structured_output`.
+- **Env** — `DEVIN_API_KEY`.
+- **Returned meta** — `{ sessionId, url, status }`.
+- **Prompt** — receives the harness prompt with the repo URL prefixed (via `composePrompt` in `types.ts`).
+
+### cursor — Cursor Background Agents
+
+`src/core/agents/cursor.ts`. No model override — Cursor picks its own.
+
+- **Transport** — direct HTTP against `https://api.cursor.com/v0` (override with `CURSOR_API_BASE`).
+- **Flow** —
+  1. `POST /agents` with `{ prompt: { text }, source: { repository } }`. Uses `ctx.contextRepoUrl` if the case set one, else `CURSOR_REPOSITORY`.
+  2. Poll `GET /agents/<id>` every **5 s** up to **30 min**.
+  3. Terminate on `status ∈ { COMPLETED, FAILED, CANCELLED }`.
+  4. Prefer the last assistant message from `GET /agents/<id>/conversation`; fall back to the agent `summary`.
+- **Env** — `CURSOR_API_KEY`, `CURSOR_REPOSITORY`.
+- **Returned meta** — `{ agentId, url, status }`.
+
+### Missing env is not fatal for other agents
+
+`requireEnv(agent, vars)` throws `MissingAgentEnvError` for that agent only. The runner catches it per-case, records the error, and continues with the next case/target. So a run with `AI_GATEWAY_API_KEY` set but `DEVIN_API_KEY` missing will complete the Claude/Codex columns and mark every Devin cell as errored.
+
+## Models
+
+### Catalog
+
+Which models each base agent supports at run time is declared in `src/core/agents/model-catalog.ts`:
+
+| Agent | Default | Other supported |
+|---|---|---|
+| `claude` | `anthropic/claude-opus-4-7` | `anthropic/claude-opus-4`, `anthropic/claude-sonnet-4-5`, `anthropic/claude-sonnet-4`, `anthropic/claude-haiku-4-5` |
+| `codex` | `openai/gpt-5-codex` | `openai/gpt-5`, `openai/gpt-5-mini`, `openai/gpt-4o` |
+| `devin` | (session picks) | — |
+| `cursor` | (agent picks) | — |
+
+Any gateway-compatible model id will actually work for `claude` / `codex` at runtime — the catalog is what the `/new` UI enumerates and what `agent-benchmark`'s defaults draw from. Unknown ids log a warning but still run.
+
+### Override syntax
+
+Everywhere a target id appears (CLI `--models=…`, `/new` form, workflow input, suite default), the `@<model>` suffix works on `claude` / `codex`:
+
+```
+claude@anthropic/claude-sonnet-4-5
+codex@openai/gpt-5-mini
+claude@anthropic/claude-sonnet-4-5+cg
+```
+
+### Cost table
+
+`src/core/cost.ts` keeps per-Mtok pricing for the models we track. `estimateCostUsd(target, usage)` looks up the effective model (from the target id or the adapter default) and computes `(inputTokens * inRate + outputTokens * outRate) / 1e6`. Models absent from the table return `0` — the CLI + dashboard columns still render, they just won't add to the cost total.
+
+## Context providers
+
+A **ContextProvider** is defined by `src/core/context-providers/types.ts`:
+
+```ts
+{
+  id: string                                 // slug used in target ids (`cg`, `orbit`)
+  displayName: string
+  requiredEnv: string[]
+  isConfigured(): boolean
+  query(q: ContextQuery): Promise<ContextResult>
+  formatAsContext(result: ContextResult): string
+}
+```
+
+`ContextQuery` is `{ prompt, repoUrl?, repoPath? }`; `ContextResult` is `{ summary, documents: [{ path?, url?, excerpt, score? }] }`.
+
+### Composition — `withProvider(base, provider)`
+
+`src/core/agents/with-provider.ts` builds a composed adapter:
+
+1. Times a call to `provider.query({ prompt, repoUrl, repoPath })`.
+2. Formats the result via `provider.formatAsContext(result)` — the default formatter prints a `## <displayName> findings` block followed by a bullet list of documents with their excerpts.
+3. Concatenates it with any existing `ctx.contextText` (provider output first, then case-supplied context).
+4. Delegates to the base adapter's `run()` with the enriched `contextText`.
+5. Adds `meta.provider = { id, displayName, latencyMs, documentCount, summary }` to the returned output.
+
+The runner extracts `meta.provider` into `CaseResult.diagnostics.{providerId, providerLatencyMs, providerDocumentCount}` so the dashboard can show provider cost separately from the agent's own latency.
+
+### Registered providers
+
+Both currently stubs — they read their own env vars, POST `{ prompt, repoUrl, repoPath }`, and expect `{ summary, documents[] }`. Wiring stays constant; only the fetch call changes when each API contract is finalised.
+
+- **`cg` — Context Graph** (`src/core/context-providers/context-graph.ts`). Env: `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY`.
+- **`orbit` — Orbit** (`src/core/context-providers/orbit.ts`). Env: `ORBIT_API_URL`, `ORBIT_API_KEY`.
+
+### Adding a new provider
+
+1. Create `src/core/context-providers/<slug>.ts` that exports a `ContextProvider` instance.
+2. Register it in `src/core/context-providers/index.ts`.
+3. The agent registry, `/new` form, delta matrix, and skill payload all pick it up automatically.
+
+## Prompts
+
+The suite `agent-benchmark` (`src/evals/agent-benchmark.ts`) currently ships **12 prompts** across three categories.
+
+### Build (5)
+
+| Case id | Difficulty | Axes | Focus |
+|---|---|---|---|
+| `build-01-add-api-field` | easy | schema_repair, multistep | Add `preferred_language` to the User API end-to-end (validation, tests, docs, migration). Ships **deterministic ground truth**: must-mention `preferred_language` / `639` / `'en'`, regex checks for migration + rollback, and a JSON structured-output schema. |
+| `build-02-add-service` | medium | discovery, multistep, statefulness | Carve `notification-preferences` out into a new service that emits `preferences.updated`. |
+| `build-03-v1-to-v2-migration` | hard | schema_repair, multistep, error_recovery | Migrate the public API from v1 to v2 (camelCase, cursor pagination, RFC 9457). |
+| `build-04-refactor` | medium | discovery, multistep | Extract auth / rate-limiting / logging / tracing into composable middleware. |
+| `build-05-auth-update` | hard | authentication, multistep, statefulness | Replace HMAC cookies with OAuth 2.1 + PKCE; keep API-key M2M. Cover migration of live sessions. |
+
+### Find (3)
+
+| Case id | Difficulty | Axes | Focus |
+|---|---|---|---|
+| `find-01-api-down-blast-radius` | hard | impact_analysis, error_recovery, discovery, statefulness | `payments-api` down — root cause + downstream blast radius. |
+| `find-02-trace-value` | medium | impact_analysis, multistep, docs_alignment | Trace `billing_address` from checkout to invoice through every transformation and store. |
+| `find-03-db-change-blast-radius` | hard | impact_analysis, schema_repair, multistep | `orders.customer_id` INT → UUID: enumerate every consumer + rollout plan. |
+
+### Ask (4)
+
+| Case id | Difficulty | Axes | Focus |
+|---|---|---|---|
+| `ask-01-three-way-drift` | medium | docs_alignment, discovery | Spec vs collection vs code drift audit. |
+| `ask-02-most-dependencies` | easy | discovery, impact_analysis | Top-5 endpoints by dependency count + call graph for #1. Ships **deterministic ground truth**: JSON schema requiring exactly 5 endpoints with counts + a non-empty call graph. |
+| `ask-03-docs-drift` | medium | docs_alignment, discovery | Every endpoint where docs disagree with code (status codes, shapes, side effects). |
+| `ask-04-owasp-security` | hard | security_review, authentication, discovery | OWASP API Top 10 review. Ships **deterministic ground truth**: JSON schema requiring ≥3 findings with `owaspId` enum + `file:line` refs + exploit + downstream. |
+
+### Ticket framing
+
+Every prompt has a `ticket` block prepended to `input` at run time. Example (build-01):
+
+```
+Ticket #4821. A caller is trying to PATCH a user with a new field and getting a 422:
+
+PATCH /users/u_9f21
+Content-Type: application/json
+{"preferred_language": "es"}
+→ 422 Unprocessable Entity
+  {"error": "unknown_field", "field": "preferred_language"}
+
+We want to ship this field. It must persist, appear on GET /users/:id, be accepted on PATCH /users/:id, validate as ISO 639-1, and default to 'en' for existing rows.
+
+---
+
+Add `preferred_language` to the User API end-to-end. Include the migration, validation, tests, and docs updates. Reference specific files in the repo. At the end of your answer, append a fenced ```json block matching { field, iso, default, touched[], migration: { forward, rollback } }.
+```
+
+Effect: the agent reads the case as a realistic dev ticket, not a clean prompt. This is directly borrowed from APIFlow-Bench's failure-first framing.
+
+## Scoring
+
+Two scorers run in parallel per case; `aggregateScore` is the mean of the non-null scores. `passed = aggregateScore >= 0.5` (lenient by design — the delta between conditions matters more than the absolute pass rate at this stage).
+
+### 1. `deterministic()` — mechanical checks
+
+`src/core/scorers/deterministic.ts`. Implements APIFlow-Bench's "grade the result, not the answer string" principle.
+
+Each case can declare `groundTruth.checks[]`. Five check types:
 
 | Check | What it does |
 |---|---|
 | `must-mention` | Every needle in `needles: string[]` appears in the output text. `caseSensitive` optional. Records missing needles in details on failure. |
 | `must-not-mention` | Inverse — no needle appears. |
-| `regex` | Single `regex` matches (or, with `shouldMatch: false`, does not match). Cheap way to encode "output must include a numbered plan" (`/^\s*1\.\s/m`) or "output must reference a migration" (`/\bmigrat(ion|e)\b/i`). |
-| `structured-output` | Extracts a JSON block from the output and validates it against a Zod schema. Extraction priority: (a) last fenced ` ```json ` block, (b) last fenced ` ``` ` block that starts with `{` or `[`, (c) the last balanced `{…}` or `[…]` in the text. Records Zod's first 5 issues on failure. This is how we get real numeric ground truth ("exactly 5 endpoints in `top5`", "≥3 OWASP findings with `file:line`"). |
-| `custom` | An async callback `(output, case) => { pass, details? }` for anything the above don't cover. |
+| `regex` | Single `regex` matches (or, with `shouldMatch: false`, does not match). |
+| `structured-output` | Extracts a JSON block from the output and validates it against a Zod schema. Extraction priority: (a) last fenced ` ```json ` block, (b) last fenced ` ``` ` block that starts with `{` or `[`, (c) the last balanced `{…}` or `[…]` in the text. Records Zod's first 5 issues on failure. |
+| `custom` | Async callback `(output, case) => { pass, details? }`. |
 
-When a case has **no** `groundTruth`, the scorer returns `{ score: null, label: "no-ground-truth" }` and the runner drops the null from the aggregate. That way the LLM judge stands alone on un-instrumented cases without being penalised by a missing scorer. Today three cases carry deterministic checks (`build-01-add-api-field`, `ask-02-most-dependencies`, `ask-04-owasp-security`) — the pattern for adding more is in each of their `groundTruth.checks` arrays.
+Score is `passed / total`. When a case has **no** `groundTruth`, the scorer returns `{ score: null, label: "no-ground-truth" }` — the runner filters `null` when aggregating so the LLM judge stands alone on un-instrumented cases without being penalised. Today three cases carry ground-truth checks (`build-01-add-api-field`, `ask-02-most-dependencies`, `ask-04-owasp-security`).
 
-Scores show up in the dashboard drawer as a ✓/✗ list under **Scores → deterministic**, with the check description on each row.
+### 2. `llmJudge()` — rubric-based
 
-### 2. `llmJudge()` — rubric-based scoring by a stronger model
-
-An LLM (default `anthropic/claude-opus-4-7`, configurable per suite) scores the answer against a rubric via `generateObject`. Every call is a structured-output request that returns:
+`src/core/scorers/judge.ts`. Default judge model `anthropic/claude-opus-4-7`. Uses `generateObject` with a Zod schema so the return is structured:
 
 ```ts
 {
-  rationale: string,      // 2-3 sentence explanation
-  dimensions: { [dim]: number },  // integer 1..5 per rubric dimension
-  overall: number,        // integer 1..5
+  rationale: string,               // 2-3 sentence explanation
+  dimensions: { [dim]: number },   // integer 1..5 per rubric dimension
+  overall: number,                 // integer 1..5
 }
 ```
 
-`agent-benchmark` uses **category-specific rubrics** so build / find / ask prompts are graded on the dimensions that matter for each shape of work (`src/evals/agent-benchmark.ts`):
+Score is `(overall - min) / (max - min)`. Per-dimension scores are preserved in `scores.llmJudge.details.dimensions` — the case drawer renders them.
 
-| Category | Dimensions |
+### Rubrics per category
+
+`agent-benchmark.ts` sets category-specific rubrics via `suite.rubricsByCategory`:
+
+| Category | Dimensions (1..5) |
 |---|---|
 | **build** | `problem_understanding`, `plan_quality`, `completeness`, `migration_safety`, `actionability` |
 | **find** | `root_cause_depth`, `dependency_coverage`, `evidence_grounding`, `impact_prioritization`, `remediation_clarity` |
 | **ask** | `accuracy`, `evidence_citation`, `completeness`, `prioritization`, `actionability` |
 
-Rubric resolution is per-case: `case.judgeRubric` → `suite.rubricsByCategory[category]` → `suite.judgeRubric`. The `rubricsByCategory` map is keyed off `case.metadata.category`, which is a plain string tag on the case.
+Resolution is per-case: `case.judgeRubric` → `suite.rubricsByCategory[category]` → `suite.judgeRubric` (fallback = build rubric).
 
-The judge's `overall` (1..5) is normalised to `(overall - min) / (max - min)` for the scorer's `score` field. Every per-dimension score is preserved in `scores.llmJudge.details.dimensions` — the case drawer renders them as an indented list under the aggregate.
-
-### How the two combine
+### Aggregation
 
 Per case:
 
@@ -166,24 +370,123 @@ aggregateScore = mean( scores.filter(s => s.score !== null).map(s => s.score) )
 passed         = aggregateScore >= 0.5
 ```
 
-Per model (in the manifest):
+Per target (in `manifest.aggregate.perModel`):
 
 ```
-meanScore   = mean(aggregateScore across the model's cases)
-passRate    = passCount / caseCount
-totalCostUsd, totalInputTokens, totalOutputTokens = sums
-p50LatencyMs, p95LatencyMs                       = percentiles across cases
+meanScore        = mean(aggregateScore across the target's cases)
+passRate         = passCount / caseCount
+totalCostUsd     = sum
+totalInputTokens = sum
+totalOutputTokens = sum
+p50LatencyMs     = 50th percentile across cases
+p95LatencyMs     = 95th percentile across cases
 ```
 
-A case with `groundTruth` runs both scorers and averages them. A case without `groundTruth` is graded by the judge alone. There's no per-scorer weighting today — half the aggregate is deterministic and half is the judge whenever both are present. If you want to weight them, expose a `weights` map on the suite; the runner change is a couple of lines.
+A case with `groundTruth` runs both scorers and averages them (deterministic + judge at equal weight). A case without runs only the judge. To weight them differently, expose a `weights` map on the suite — runner change is a couple of lines.
 
-### What "passed" means
+## Dashboard
 
-`passed = aggregateScore >= 0.5`. That's a lenient default (half the dimensions at midpoint counts as a pass) that suits an early-stage benchmark where absolute pass/fail matters less than the *delta* between base and each context provider. If you want a stricter cutoff for a leaderboard-style story, raise the threshold in `runner.ts` or expose it on the suite.
+Next.js App Router app under `src/app/`. Every page reads state from disk on every request (`export const dynamic = "force-dynamic"`) so nothing is cached; visits reflect the current state, which matters while a run is still writing.
 
-### Anatomy of a run artifact
+### `/` — runs index
 
-`runs/<id>/manifest.json` — top-level summary:
+Lists every entry in `runs/`. Each row:
+- Suite name + a status pill (`running` with a pulsing dot / `errored` in red / nothing when completed).
+- Timestamp, case count, target count.
+- **Best pass** — the target with the highest pass rate across all completed cases in that run.
+- **Cost** — sum of `totalCostUsd` across targets.
+
+Top-right: **New run** button → `/new`.
+
+### `/runs/[id]` — per-run detail
+
+Loads `manifest.json` + all rows from `cases.jsonl`. Renders:
+
+- Header with suite name, status badge, and (while running) a **completed cells / total** counter + progress bar. `AutoRefresh` client component polls `router.refresh()` every 3 s while `status === "running"`.
+- **Model aggregates** table — one row per target, columns `Pass`, `Mean score`, `Cost`, `p50 ms`, `p95 ms`, `Tokens (in/out)`.
+- **Case × model matrix** — rows = case ids, columns = targets. Each cell is a **case drawer** trigger — click to open a side panel showing:
+  - Category / difficulty / capability-axis chips.
+  - Latency, cost, tokens, finish reason.
+  - **Diagnostics** — tool-call count, step count, and (for `+provider` targets) `provider latency` + `provider docs`.
+  - **Scores** — deterministic ✓/✗ list + LLM-judge per-dimension breakdown.
+  - Full output text.
+  - Tool calls (for tool-use suites).
+  - Score details JSON.
+
+### `/compare?run=<id>` — comparison view
+
+Top of the page shows a run switcher (last 8 runs). Below:
+
+- **Metrics matrix** (`src/app/compare/metrics-matrix.tsx`). Columns:
+  - `Agent` — base agent id.
+  - `Model` — short model name (drops the `<provider>/` prefix for readability; full id in the cell's `title`). Shows `—` for agents that pick their own model.
+  - `Provider` — `+cg` / `+orbit` / `baseline`.
+  - `Pass ↑`, `Score ↑`, `Cost ↓`, `p50 ↓`, `p95 ↓`, `Out tok`, `build ↑`, `find ↑`, `ask ↑`.
+  - Best cell per column is highlighted emerald. Rows are grouped by agent, then by model, then by provider.
+- **Context-provider delta matrix**. One row per `(agent, model, provider)` triple where both the baseline and the composed variant ran. Cells show `+provider − baseline` in green (moved in the desired direction) / red (moved against it) / muted (unchanged or informational). This is the "does the provider help this specific (agent, model)?" table.
+- Bar charts for quality, cost, and latency (Recharts).
+- **Disagreements** table — cases where models produced different pass/fail outcomes.
+
+### `/prompts` — prompt editor
+
+See [Editing prompts](#editing-prompts).
+
+### `/new` — start a run
+
+Per-agent card layout. Each selected agent shows two side-by-side columns:
+
+- **Model** — checkboxes for every entry in the model catalog. The adapter default is pre-checked and labelled `default`. Uncheck everything to keep the adapter default. Check multiple to fan out. Devin / Cursor show "picks its own model per session; no override."
+- **Compare against** — `baseline (no provider)` + one box per registered provider. Configured providers are pre-checked; unset ones show an `env missing` chip.
+
+Live target-list preview computes the cross product across agents × models × variants. Submit button reads `Start run (N × cases)`. The server action calls `beginRun`, gets the id, redirects to `/runs/[id]`, and leaves the promise running as background work.
+
+## CLI
+
+```bash
+pnpm eval                                              # usage help
+pnpm eval agent-benchmark                              # whole suite, default targets
+pnpm eval agent-benchmark --models=claude,claude+cg    # scope to a pair
+pnpm eval agent-benchmark --models=claude@anthropic/claude-sonnet-4-5,claude@anthropic/claude-sonnet-4-5+cg
+pnpm eval agent-benchmark --limit=2                    # smoke run (first N cases)
+pnpm eval:list                                         # list registered suites
+```
+
+The CLI runs everything through the same `runSuite` used by `/new`, so artifacts, skill hook, and dashboard behavior are identical.
+
+## Editing prompts
+
+`/prompts` exposes every case in the selected suite as an editable form. Edits persist to a **git-tracked overlay** at `data/prompt-overrides.json`, keyed by `<suite> → <caseId> → CaseOverride`. Both the runner (CLI + `/new` + workflows) and the UI read through the overlay via `getSuite(name)`, so edits take effect on the next run without a rebuild.
+
+### Overrideable
+
+- `ticket` (textarea)
+- `input` (textarea; only if the case's input is a string)
+- `context.repoUrl`, `context.repoPath`, `context.text`
+- `difficulty`
+- `capabilityAxis[]` (comma-separated in the UI)
+
+### Not overrideable (stay in code)
+
+- `id`, `metadata.category` — case identity and rubric routing.
+- `groundTruth.checks` — Zod schemas can't serialise to JSON safely.
+- `judgeRubric` — usually resolved by category anyway.
+- `tools`, `expectedToolSequence` — tool-use case shape.
+
+### UI signals
+
+- Each case shows an amber `overridden` chip when its overlay is non-empty.
+- **Save** button is disabled until you edit something.
+- **Reset to code** button removes the overlay for that case.
+
+The overlay file is small and diffable — review edits in a PR like any other change.
+
+## Artifacts on disk
+
+### `runs/<id>/`
+
+Everything a run produced, gitignored (regenerated per invocation). Two files:
+
+**`manifest.json`** — top-level summary:
 
 ```json
 {
@@ -192,19 +495,19 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
   "startedAt": "2026-08-18T14:03:19.482Z",
   "finishedAt": "2026-08-18T14:41:07.219Z",
   "status": "completed",
-  "models": ["claude", "claude+cg", "codex", "codex+cg", ...],
+  "models": ["claude", "claude+cg", "claude@anthropic/claude-sonnet-4-5", "codex+cg", ...],
   "caseCount": 12,
   "scorers": ["deterministic", "llmJudge"],
   "aggregate": {
     "perModel": {
-      "claude": { "meanScore": 0.71, "passRate": 0.83, "totalCostUsd": 0.42, "p50LatencyMs": 2118, "p95LatencyMs": 5904, ... },
-      "claude+cg": { ... }
+      "claude": { "meanScore": 0.71, "passRate": 0.83, "totalCostUsd": 0.42, "p50LatencyMs": 2118, "p95LatencyMs": 5904, "totalInputTokens": …, "totalOutputTokens": … },
+      "claude+cg": { … }
     }
   }
 }
 ```
 
-`runs/<id>/cases.jsonl` — one line per `(target, case)`:
+**`cases.jsonl`** — one line per `(target, case)`:
 
 ```json
 {
@@ -216,14 +519,19 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
   "latencyMs": 4213,
   "usage": { "inputTokens": 812, "outputTokens": 604, "totalTokens": 1416 },
   "costUsd": 0.0577,
-  "output": { "text": "…", "toolCalls": [], "steps": [], "finishReason": "stop",
-              "meta": { "provider": { "id": "cg", "displayName": "Context Graph", "latencyMs": 340, "documentCount": 7 } } },
+  "output": {
+    "text": "…",
+    "toolCalls": [],
+    "steps": [],
+    "finishReason": "stop",
+    "meta": { "provider": { "id": "cg", "displayName": "Context Graph", "latencyMs": 340, "documentCount": 7 } }
+  },
   "scores": {
     "deterministic": { "score": 1.0, "label": "4/4 checks",
-      "details": { "checks": [{ "type": "must-mention", "pass": true, "description": "..." }, ...] } },
+      "details": { "checks": [{ "type": "must-mention", "pass": true, "description": "…" }, …] } },
     "llmJudge": { "score": 0.75, "label": "4/5",
       "details": { "rationale": "…", "overall": 4,
-                   "dimensions": { "problem_understanding": 5, "plan_quality": 4, ... } } }
+                   "dimensions": { "problem_understanding": 5, "plan_quality": 4, … } } }
   },
   "aggregateScore": 0.875,
   "passed": true,
@@ -231,51 +539,12 @@ A case with `groundTruth` runs both scorers and averages them. A case without `g
 }
 ```
 
-The dashboard renders both files directly from disk on every request (`export const dynamic = "force-dynamic"`), so nothing is cached — every visit reflects the current state, which matters while a run is still writing.
+### `results/`
 
-## Run it
+Git-tracked; committed selectively.
 
-Two ways to kick off a run:
-
-### From the dashboard
-
-```bash
-pnpm install
-pnpm dev            # http://localhost:3000
-```
-
-Click **New run** (top-right on the runs index, also `/new`). Pick the suite, then choose along three axes:
-
-- **Agents** — check the ones you want (`claude`, `devin`, `cursor`, `codex`). For agents that support model overrides (Claude, Codex), each row has a `default model ▸` button that expands into a checkbox list of supported models. Leave all model boxes unchecked to use the adapter default; check one or more to fan the run out across models. Devin and Cursor row shows "picks its own model" and offers no override.
-- **Context providers** — check `cg`, `orbit`, or any other registered provider. Providers whose env vars aren't set show an `env missing` chip.
-- **Include baseline (no provider)** toggle — on by default. Turn off if you only want composed targets.
-
-The form previews the computed target list live (e.g. `claude, claude@anthropic/claude-opus-4-7+cg, claude@anthropic/claude-sonnet-4-5, claude@anthropic/claude-sonnet-4-5+cg, devin, devin+cg`) and the submit button reads `Start run (<targets> × <cases>)` so cost is visible before you commit.
-
-You'll be redirected to the run page, which auto-refreshes every 3 seconds while the run is in progress — cases appear in the matrix as they complete.
-
-Runs kicked off from the UI execute in-process inside the Next.js dev server. Closing the terminal or a hot-reload will kill an in-progress run; that's fine for local iteration but means this pattern is dev-only. Deploying to Vercel would need a queue (Vercel Queues / Workflow DevKit).
-
-### Editing prompts from the UI
-
-`/prompts` lists every case in the selected suite. Editable fields — `ticket`, `input`, `context.repoUrl`, `context.repoPath`, `context.text`, `difficulty`, `capabilityAxis[]` — persist to a git-tracked overlay at `data/prompt-overrides.json` keyed by suite name → case id. **Both the runner (CLI + `/new`) and the UI read through the overlay**, so edits take effect on the next run without a rebuild.
-
-Non-overrideable fields stay in code and require a code change:
-- `id`, `metadata.category` — case identity and rubric routing.
-- `groundTruth.checks` — deterministic assertions (Zod schemas can't serialise to JSON safely).
-- `judgeRubric` — usually resolved by category anyway.
-- `tools`, `expectedToolSequence` — tool-use case shape.
-
-Each case shows an `overridden` chip when its overlay is non-empty, and a **Reset to code** button that removes the overlay for that case. The overlay file is small and diffable — review edits in a PR like any other change.
-
-### From the CLI
-
-```bash
-pnpm eval agent-benchmark                              # whole suite
-pnpm eval agent-benchmark --models=claude,claude+cg    # scope to a pair
-pnpm eval agent-benchmark --limit=2                    # smoke run
-pnpm eval:list                                         # list available suites
-```
+- `results/nightly-baseline.json` — the previous nightly's mean pass rate. `scripts/check-regression.mjs` compares against it and opens a `regression`-labelled issue if the drop exceeds 5 pp. Committed back to `main` with `[skip ci]` at the end of every nightly.
+- `results/skill-input.json` — **gitignored**. The post-run summary for the release-autopilot skill. Overwritten every run. See below.
 
 ## Release-autopilot skill handshake
 
@@ -288,81 +557,23 @@ This harness is the benchmark backend for the release-autopilot skill in [Postma
 | Stage | Owner | How it lands in this repo |
 |---|---|---|
 | 1. **Detect** a new model / framework release | Skill (hourly cron over a watchlist of vendor blogs, GitHub releases, HuggingFace trending) | — |
-| 2. **Run the ai-harness** against the new model | Skill triggers → harness runs | `workflow_dispatch` or `repository_dispatch` on `.github/workflows/on-model-release.yml`; harness runs `agent-benchmark` across every registered `(agent × provider)` target |
-| 3. **Produce the visuals** for the study | Skill — reads `results/skill-input.json` or the webhook payload and generates the charts | Harness emits the raw numbers; chart rendering is the skill's job |
+| 2. **Run the ai-harness** against the new model | Skill triggers → harness runs | `workflow_dispatch` or `repository_dispatch` on `.github/workflows/on-model-release.yml`; harness runs `agent-benchmark` across every registered target |
+| 3. **Produce the visuals** for the study | Skill — reads `results/skill-input.json` or the webhook payload and generates the charts | Harness emits raw numbers; chart rendering is the skill's job |
 | 4. **Post to social** (X / LinkedIn / blog / Discord) | Skill — using its own credential set | — |
-| 5. **Regenerate the harness config** so the new model becomes the default | Harness | `on-model-release.yml` commits the `MODEL` constant bump in the relevant adapter back to `main` with `[skip ci]`, so tomorrow's nightly and every subsequent run pick up the new default |
+| 5. **Regenerate the harness config** so the new model becomes the default | Harness | `on-model-release.yml` commits the `MODEL` constant bump in the relevant adapter back to `main` with `[skip ci]` |
 
-### How the tagline gets computed
+### Skill → harness
 
-The X / Y / Z percentages in the post come straight out of `results/skill-input.json`:
-
-| Tagline claim | Field | How the skill derives the % |
-|---|---|---|
-| **"X% better at APIs"** | `providerDeltas[].meanScoreDelta` or `passRateDelta` (each row carries `agent`, `model`, `providerId`) | The skill picks the `providerId` under test (usually `cg`), filters `perCategoryByTarget` to `category === "build"` or `"ask"` for API-shaped work, and takes the mean delta across agents. Because each delta row is keyed on (agent, model, provider), the skill can slice the tagline per (agent, model) pair — e.g. "the graph helps Claude Opus 4.7 more than it helps Claude Sonnet 4.5." Positive = the provider made the model better. |
-| **"Y% cheaper per task"** | `providerDeltas[].costDelta` combined with `aggregate.perModel[target].totalCostUsd` | Cost-per-passed-case: `totalCostUsd / passCount` for base vs `+provider`; the tagline reports the percentage reduction. |
-| **"Z% more autonomous"** | `runs/<id>/cases.jsonl` → `diagnostics.toolCallCount` + `stepCount` | Autonomy is agent-side: fewer tool calls / steps to reach the same quality means the model + provider needed less prodding. The skill computes `(baseline_calls − provider_calls) / baseline_calls` at equal-or-higher score. |
-
-The harness emits the raw numbers so the skill can pick the framing that lands cleanest on a given post. If a claim can't be substantiated from the JSON, the skill's guardrails halt the post.
-
-### Two directions
-
-**Skill → harness.** The skill triggers `.github/workflows/on-model-release.yml`, either as `workflow_dispatch` or `repository_dispatch` (`event_type: new-model-release`). Payload / inputs:
+The skill triggers `.github/workflows/on-model-release.yml`, either as `workflow_dispatch` or `repository_dispatch` (`event_type: new-model-release`). Payload:
 
 | Field | Meaning |
 |---|---|
 | `model` (required) | New model identifier (e.g. `anthropic/claude-5-opus`) |
-| `adapter` | Which slot to update: `claude` / `codex` / `devin` / `cursor` swaps the `MODEL` constant in `src/core/agents/<adapter>.ts`; `raw` (default) appends the model to `src/evals/agent-benchmark.ts`'s `models` list as a new raw-model target |
+| `adapter` | `claude` / `codex` / `devin` / `cursor` swaps the `MODEL` constant in that adapter; `raw` (default) appends the model to `agent-benchmark`'s `models` list as a new raw-model target |
 | `releaseUrl` | Vendor release / model-card URL — recorded on the run |
 | `dispatchedBy` | Free-form caller label (e.g. `skill:model-context-graph-comparison`) |
 
-`repository_dispatch` from another repo needs a PAT with `repo` scope on `buildwithtalia/ai-harness`. The workflow applies the change via `scripts/apply-model-update.mjs`, runs `pnpm build` + `pnpm eval agent-benchmark`, uploads artifacts, and commits the adapter change with `[skip ci]` on success.
-
-**Harness → skill.** Every completed run — from the CLI, from the `/new` UI, or from any workflow — writes `results/skill-input.json` (gitignored) with the manifest + per-category rollups + per-provider deltas + trigger context. If `SKILL_WEBHOOK_URL` is configured, the runner also POSTs the same payload (with optional `SKILL_WEBHOOK_TOKEN` bearer auth) so the skill's downstream stages (write study, generate charts, post) can consume it without watching the workflow. See `src/core/skill-hook.ts` for the exact shape.
-
-### Payload shape (`results/skill-input.json`)
-
-```json
-{
-  "runId": "2026-08-18T21-14-02-118Z__agent-benchmark",
-  "suite": "agent-benchmark",
-  "status": "completed",
-  "startedAt": "2026-08-18T21:14:02.118Z",
-  "finishedAt": "2026-08-18T21:47:33.401Z",
-  "models": ["claude", "claude+cg", "claude+orbit", ...],
-  "caseCount": 12,
-  "aggregate": { "perModel": { ... } },
-  "perCategoryByTarget": [
-    { "target": "claude", "category": "build", "passRate": 0.6, "meanScore": 0.71, "caseCount": 5 },
-    ...
-  ],
-  "providerDeltas": [
-    { "agent": "claude", "providerId": "cg", "passRateDelta": 0.10, "meanScoreDelta": 0.09, "costDelta": 0.02, "p50LatencyDelta": 340 },
-    { "agent": "claude", "providerId": "orbit", ... },
-    ...
-  ],
-  "triggerContext": {
-    "modelId": "anthropic/claude-5-opus",
-    "adapterChanged": "claude",
-    "releaseUrl": "https://www.anthropic.com/news/claude-5-opus",
-    "workflowRunUrl": "https://github.com/.../actions/runs/1234",
-    "dispatchedBy": "skill:model-context-graph-comparison"
-  },
-  "emittedAt": "2026-08-18T21:47:33.415Z"
-}
-```
-
-### Secrets the skill needs to set
-
-On `buildwithtalia/ai-harness`, Settings → Secrets and variables → Actions:
-
-| Secret | Purpose |
-|---|---|
-| `SKILL_WEBHOOK_URL` | The skill's inbound URL for post-run notifications (skip if the skill polls artifacts instead) |
-| `SKILL_WEBHOOK_TOKEN` | Optional Bearer token the skill validates on inbound webhooks |
-| `ORBIT_API_URL`, `ORBIT_API_KEY` | Needed for any `+orbit` composed target in a release run |
-
-On the skill's side, invoking the harness with `repository_dispatch`:
+`repository_dispatch` from another repo needs a PAT with `repo` scope on `buildwithtalia/ai-harness`. Concrete invocation:
 
 ```bash
 gh api repos/buildwithtalia/ai-harness/dispatches \
@@ -373,57 +584,111 @@ gh api repos/buildwithtalia/ai-harness/dispatches \
   -F 'client_payload[dispatchedBy]=skill:model-context-graph-comparison'
 ```
 
+The workflow applies the change via `scripts/apply-model-update.mjs`, runs `pnpm build` + `pnpm eval agent-benchmark`, uploads `runs/` + `results/skill-input.json` as an artifact, and commits the adapter change with `[skip ci]` on success.
+
+### Harness → skill
+
+Every completed run — from the CLI, the `/new` UI, or any workflow — writes `results/skill-input.json` and, if `SKILL_WEBHOOK_URL` is set, POSTs it (with optional `SKILL_WEBHOOK_TOKEN` bearer auth). See `src/core/skill-hook.ts`.
+
+Payload shape:
+
+```json
+{
+  "runId": "…",
+  "suite": "agent-benchmark",
+  "status": "completed",
+  "startedAt": "…",
+  "finishedAt": "…",
+  "models": ["claude", "claude+cg", …],
+  "caseCount": 12,
+  "aggregate": { "perModel": { … } },
+  "perCategoryByTarget": [
+    { "target": "claude", "category": "build", "passRate": 0.6, "meanScore": 0.71, "caseCount": 5 },
+    …
+  ],
+  "providerDeltas": [
+    { "agent": "claude", "model": "anthropic/claude-opus-4-7", "providerId": "cg",
+      "passRateDelta": 0.10, "meanScoreDelta": 0.09, "costDelta": 0.02, "p50LatencyDelta": 340 },
+    …
+  ],
+  "triggerContext": {
+    "modelId": "anthropic/claude-5-opus",
+    "adapterChanged": "claude",
+    "releaseUrl": "…",
+    "workflowRunUrl": "https://github.com/.../actions/runs/1234",
+    "dispatchedBy": "skill:model-context-graph-comparison"
+  },
+  "emittedAt": "…"
+}
+```
+
+Trigger context is filled in from env vars set by `on-model-release.yml` (`SKILL_TRIGGER_MODEL`, `SKILL_TRIGGER_ADAPTER`, `SKILL_TRIGGER_RELEASE_URL`, `SKILL_TRIGGER_DISPATCHED_BY`) plus the standard `GITHUB_*` action env for the workflow-run URL.
+
+### Tagline field mapping
+
+| Tagline claim | Field | How the skill derives the % |
+|---|---|---|
+| **"X% better at APIs"** | `providerDeltas[].meanScoreDelta` or `passRateDelta` (each row carries `agent`, `model`, `providerId`) | Filter `perCategoryByTarget` to `category === "build"` or `"ask"`; mean delta across agents. Because each row is keyed on `(agent, model, provider)`, the skill can slice per pair — e.g. "the graph helps Claude Opus 4.7 more than Claude Sonnet 4.5." |
+| **"Y% cheaper per task"** | `providerDeltas[].costDelta` combined with `aggregate.perModel[target].totalCostUsd` | Cost-per-passed-case = `totalCostUsd / passCount` for base vs `+provider`; the tagline reports the percentage reduction. |
+| **"Z% more autonomous"** | `diagnostics.toolCallCount` + `stepCount` from `cases.jsonl` in the workflow artifact | `(baseline_calls − provider_calls) / baseline_calls` at equal-or-higher score. |
+
 ## Continuous integration
 
-Three GitHub Actions workflows live under `.github/workflows/`:
+Three GitHub Actions workflows live under `.github/workflows/`.
 
-- **`eval-nightly.yml`** — runs `pnpm eval agent-benchmark` at 07:00 UTC daily on `main` (also `workflow_dispatch`). Uploads `runs/<id>/` as a 30-day artifact, then invokes `scripts/check-regression.mjs`, which compares the current run's mean pass rate against `results/nightly-baseline.json`. If the drop exceeds 5 percentage points, the script opens a `regression`-labeled issue. The baseline file is always updated to the latest run and committed back to `main` with `[skip ci]`.
-- **`pr-eval-smoke.yml`** — triggers on pull requests that touch `src/evals/**`. Runs the first 2 cases against `claude` and `claude+cg` only (no paid Devin/Cursor sessions on every push) via `pnpm eval agent-benchmark --limit=2 --models=claude,claude+cg`. Artifacts retained 7 days.
-- **`on-model-release.yml`** — the release-autopilot skill's entrypoint. Triggered via `workflow_dispatch` or `repository_dispatch` (`event_type: new-model-release`) with a `model` + `adapter` + `releaseUrl` payload. Applies the model change via `scripts/apply-model-update.mjs`, runs the eval, uploads artifacts, and commits the adapter bump on success. See *Release-autopilot skill handshake* above for the full contract.
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `eval-nightly.yml` | `schedule: 0 7 * * *` (07:00 UTC) + `workflow_dispatch` | Runs `pnpm eval agent-benchmark`, uploads `runs/<id>/` as a 30-day artifact, runs `scripts/check-regression.mjs` (opens `regression`-labelled issue if mean pass rate drops >5 pp vs `results/nightly-baseline.json`), commits the updated baseline back to `main` with `[skip ci]`. |
+| `pr-eval-smoke.yml` | `pull_request` on `src/evals/**` | Runs the first 2 cases against `claude` + `claude+cg` only, no paid Devin/Cursor sessions on every push. Artifacts retained 7 days. |
+| `on-model-release.yml` | `workflow_dispatch` + `repository_dispatch: new-model-release` | Release-autopilot skill entrypoint. Applies model update, runs eval, uploads artifacts, commits adapter bump. Details above. |
 
-Required repo secrets (Settings → Secrets and variables → Actions):
+## Environment variables and secrets
 
-| Secret | Used by |
-|---|---|
-| `AI_GATEWAY_API_KEY` | nightly + PR smoke + on-model-release |
-| `DEVIN_API_KEY` | nightly + on-model-release |
-| `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | nightly + on-model-release |
-| `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | nightly + PR smoke + on-model-release (only if `+cg` targets should run; unset ⇒ `+cg` cases error and the rest still run) |
-| `ORBIT_API_URL`, `ORBIT_API_KEY` | nightly + on-model-release (same conditional) |
-| `SKILL_WEBHOOK_URL`, `SKILL_WEBHOOK_TOKEN` | Optional — post-run notification to the release-autopilot skill |
-
-`GITHUB_TOKEN` is auto-provided; no manual issuance needed for opening the regression issue or committing the baseline.
-
-Environment variables:
+### Local `.env.local`
 
 | Variable | Needed for |
 |---|---|
-| `AI_GATEWAY_API_KEY` | `claude`, `codex`, and any raw model target |
+| `AI_GATEWAY_API_KEY` | `claude`, `codex`, and any raw model target through the AI Gateway |
 | `DEVIN_API_KEY` | `devin` |
 | `CURSOR_API_KEY`, `CURSOR_REPOSITORY` | `cursor` |
 | `CONTEXT_GRAPH_API_URL`, `CONTEXT_GRAPH_API_KEY` | any `+cg` composed target |
 | `ORBIT_API_URL`, `ORBIT_API_KEY` | any `+orbit` composed target |
+| `SKILL_WEBHOOK_URL`, `SKILL_WEBHOOK_TOKEN` | optional — POST completed runs to the release-autopilot skill |
 
-A missing env var raises `MissingAgentEnvError` for that agent/provider combination only — the other agents still run. The `/new` form flags providers whose env is unset with an `env missing` chip so you don't queue a run that will error every case.
+Missing env raises `MissingAgentEnvError` for that agent/provider combination only — the other agents still run. The `/new` form flags providers whose env is unset with an `env missing` chip so you don't queue a run that will error every case.
 
-## Waiting on
+### GitHub repo secrets
 
-Everything below is scaffolded but stubbed / provisional. The wiring is in place so filling each item in is a small localized change.
+Same names as above; add via **Settings → Secrets and variables → Actions** on `buildwithtalia/ai-harness`. `GITHUB_TOKEN` is auto-provided.
 
-- **Finalize prompts** — `src/evals/agent-benchmark.ts` currently ships 12 prompts (5 build / 3 find / 4 ask). These are the starting draft from the initial spec. Waiting on:
-  - Final wording and any additional prompts.
-  - Per-prompt fixture repos. All 12 cases currently point at [`healthcare-org-app/healthcare-infra`](https://github.com/healthcare-org-app/healthcare-infra) as their `context.repoUrl`. Additional fixture repos (e.g. a fintech-shaped one for `payments-api`-flavoured prompts, an e-commerce-shaped one for `orders.customer_id` migrations) will let prompts get retargeted per case. Cursor consumes the repo URL directly via its adapter; Claude / Codex / Devin receive it as text in the prompt.
-- **Finalize agents** — the four adapters (`claude`, `devin`, `cursor`, `codex`) hit the real APIs I could confirm:
-  - `claude` and `codex` go through the Vercel AI Gateway. Confirm the exact model IDs to lock in (`anthropic/claude-opus-4-7`, `openai/gpt-5-codex` today).
-  - `devin` uses `POST /v1/sessions` + status polling. Confirm the endpoint shape hasn't changed and lock in session-title conventions.
-  - `cursor` uses `POST /v0/agents` + status polling with a fallback to a `/conversation` endpoint. Confirm the actual response schema and drop the fallback branch once known.
-- **Finalize models** — `src/core/cost.ts` has rates for a starter set of Claude / GPT / Gemini SKUs. New model IDs need a row before their cost column is meaningful. When new models ship, decide whether they become the new default inside an existing adapter (edit `src/core/agents/<agent>.ts`) or a new raw-model row in `agent-benchmark`.
-- **Context provider APIs** — both providers under `src/core/context-providers/` are stubs. Each reads its own env vars, POSTs `{ prompt, repoUrl, repoPath }`, and expects `{ summary, documents[] }`. Waiting on:
-  - **Context Graph** (`src/core/context-providers/context-graph.ts`, env `CONTEXT_GRAPH_API_URL` + `CONTEXT_GRAPH_API_KEY`) — real endpoint URL, auth scheme, request shape (query params? workspace id?), and response document shape (fields, scores, edges).
-  - **Orbit** (`src/core/context-providers/orbit.ts`, env `ORBIT_API_URL` + `ORBIT_API_KEY`) — same open questions.
-  - Once known, only the provider's file changes. Everything downstream (composed adapters, `/new` selector, runner, dashboard, diagnostics, delta matrix) already works.
+## Extending
 
-Adding a third provider is one file + one line in `src/core/context-providers/index.ts`; the agent registry, `/new` form, and delta matrix pick it up automatically.
+### Add a new agent
+
+1. Create `src/core/agents/<slug>.ts` exporting an `AgentAdapter` (or a factory `createFooAdapter(model?: string)`).
+2. Register the base instance in `src/core/agents/index.ts` (`baseAgents` array, `FACTORIES` map, `BASE_AGENT_IDS` set).
+3. Extend `BaseAgentId` in `src/core/agents/types.ts`.
+4. Add supported models to `model-catalog.ts` (empty array = no override).
+5. Update the cost table in `src/core/cost.ts` if the agent has known-cost models.
+6. That's it — `/new`, delta matrix, skill hook all pick it up automatically.
+
+### Add a new model to an existing agent
+
+Add the id to the relevant entry in `SUPPORTED_MODELS` (`src/core/agents/model-catalog.ts`). Adding a row to `src/core/cost.ts` gives it a cost column.
+
+### Add a new context provider
+
+1. Create `src/core/context-providers/<slug>.ts` exporting a `ContextProvider`.
+2. Register it in `src/core/context-providers/index.ts`.
+3. Everything downstream picks it up (agent registry, `/new` form, delta matrix, skill payload).
+
+### Add a new prompt
+
+Append an `EvalCase` to `agent-benchmark.ts`'s `cases` array. Give it a stable id, set `metadata.category`, add a `ticket` if you want the failure-first framing, and (ideally) `groundTruth.checks` so the deterministic scorer contributes signal.
+
+### Add a new scorer
+
+Create `src/core/scorers/<slug>.ts` exporting a `Scorer`. Add it to `agent-benchmark`'s `scorers` array. Return `{ score: null }` from cases where it doesn't apply so it doesn't drag the aggregate down.
 
 ## Design references
 
@@ -431,6 +696,23 @@ Two pieces of prior art the design pulls from:
 
 - **[APIFlow-Bench](https://blog.postman.com/apiflow-bench/)** (Postman, July 2026) — grade the result, not the answer string; decompose engineering work into named capability axes; frame each task failure-first (broken call + hint + ticket); tier by difficulty. Reflected here as `ticket`, `difficulty`, `capabilityAxis[]`, and per-category rubrics.
 - **[Local Code Graphs Are the Agent Context Layer](https://www.developersdigest.tech/blog/codegraph-local-indexes-ai-coding-agents)** (Developers Digest, May 2026) — "graph for navigation, file for truth." What to measure alongside a graph: tool calls before the first edit, file reads, staleness. Reflected here as `CaseResult.diagnostics` (`toolCallCount`, `stepCount`, `providerId`, `providerLatencyMs`, `providerDocumentCount`).
+
+The public [`postmanlabs/APIFlow-Bench`](https://github.com/postmanlabs/APIFlow-Bench) repo (467 tasks × 5 epochs × 19 models = 44k trials, all transcripts public, provenance-gated grading, deterministic mocks) is what this harness ultimately wants to integrate with — see the improvement roadmap in [Waiting on](#waiting-on).
+
+## Waiting on
+
+Everything below is scaffolded but stubbed / provisional. The wiring is in place so filling each item in is a small localized change.
+
+- **Finalize prompts** — the 12 currently in `agent-benchmark.ts` are the initial draft. Waiting on final wording and any additional cases. All 12 point at `github.com/healthcare-org-app/healthcare-infra` as their `context.repoUrl`. Additional fixture repos will let prompts get retargeted per case; Cursor consumes the URL directly via its adapter, other agents receive it as text.
+- **Finalize agent adapter details** —
+  - `claude` and `codex` model ids to lock in.
+  - `devin` — confirm `POST /v1/sessions` shape and session-title conventions.
+  - `cursor` — confirm `POST /v0/agents` response schema; drop the `/conversation` fallback branch once known.
+- **Cost table** — `src/core/cost.ts` covers a starter set. New model ids need a row before their cost column is meaningful.
+- **Context provider APIs** — both `cg` and `orbit` are stubs. Each reads `<PROVIDER>_API_URL` + `<PROVIDER>_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on real endpoint URLs, auth schemes, request/response contracts. Once known, only the provider's file changes — composed adapters, `/new`, runner, dashboard, diagnostics, delta matrix all already work.
+- **Adopt more of APIFlow-Bench** — provenance-gated grading, bootstrap 90% CIs on pass rate, golden replay + bank-content SHA in `registry.json`, chain-1-to-k prefix cases, deterministic local mocks per `build` case. The most valuable single addition is provenance-gated grading — grading on task-unique canary-derived values the agent can only produce by driving the fixture backend.
+
+Adding a third provider is one file + one line in `src/core/context-providers/index.ts`; the agent registry, `/new` form, delta matrix, and skill payload pick it up automatically.
 
 ## Repo layout
 
@@ -450,34 +732,45 @@ Two pieces of prior art the design pulls from:
 │   └── check-regression.mjs       # diffs nightly aggregate vs baseline
 └── src/
     ├── core/
-    │   ├── agents/                # Base agents (claude, codex, devin, cursor) +
-    │   │                          # `withProvider(base, provider)` HOF that produces
-    │   │                          # composed adapters like `claude+cg` / `claude+orbit`
-    │   ├── context-providers/     # ContextProvider registry — one file per provider
-    │   │   ├── types.ts           # ContextProvider interface + default formatter
-    │   │   ├── context-graph.ts   # STUB — CONTEXT_GRAPH_API_URL / API_KEY
-    │   │   ├── orbit.ts           # STUB — ORBIT_API_URL / API_KEY
-    │   │   └── index.ts           # provider registry (`cg`, `orbit`)
-    │   ├── scorers/               # deterministic + llmJudge + exact + regex + toolTrace
-    │   ├── artifacts.ts           # read/write runs/ directory
-    │   ├── cost.ts                # per-Mtok pricing table
-    │   ├── providers.ts           # thin AI Gateway wrapper
-    │   ├── runner.ts              # dispatches agents vs models; calls notifySkill at end
-    │   ├── skill-hook.ts          # writes results/skill-input.json + optional webhook POST
-    │   └── types.ts               # EvalSuite, EvalCase, Scorer, CaseResult, RunManifest
+    │   ├── agents/
+    │   │   ├── claude.ts           # createClaudeAdapter(model)
+    │   │   ├── codex.ts            # createCodexAdapter(model) + fallback
+    │   │   ├── devin.ts            # POST /v1/sessions + poll
+    │   │   ├── cursor.ts           # POST /v0/agents + poll
+    │   │   ├── with-provider.ts    # composes any base × any provider
+    │   │   ├── model-catalog.ts    # per-agent supported models
+    │   │   ├── parse-target.ts     # parseTargetId / formatTargetId
+    │   │   ├── types.ts            # AgentAdapter, AgentContext, AgentOutput
+    │   │   └── index.ts            # registry, lazy resolution, listBaseAgentIds
+    │   ├── context-providers/
+    │   │   ├── types.ts            # ContextProvider interface + default formatter
+    │   │   ├── context-graph.ts    # STUB — CONTEXT_GRAPH_API_URL / API_KEY
+    │   │   ├── orbit.ts            # STUB — ORBIT_API_URL / API_KEY
+    │   │   └── index.ts            # provider registry (`cg`, `orbit`)
+    │   ├── scorers/
+    │   │   ├── deterministic.ts    # must-mention, regex, structured-output, custom
+    │   │   ├── judge.ts            # LLM judge with Zod-schema output
+    │   │   ├── exact.ts            # legacy exact / regex / contains
+    │   │   └── toolTrace.ts        # tool-sequence validator
+    │   ├── artifacts.ts            # read/write runs/ directory
+    │   ├── cost.ts                 # per-Mtok pricing table
+    │   ├── providers.ts            # thin AI Gateway wrapper
+    │   ├── runner.ts               # beginRun / runSuite + skill hook
+    │   ├── skill-hook.ts           # writes results/skill-input.json + optional webhook POST
+    │   └── types.ts                # EvalSuite, EvalCase, Scorer, CaseResult, RunManifest
     ├── evals/
-    │   ├── index.ts               # static suite registry
-    │   ├── overrides.ts           # reads data/prompt-overrides.json; merges into getSuite()
-    │   └── agent-benchmark.ts     # 12 prompts × N targets, judged on 5 dimensions
+    │   ├── index.ts                # static suite registry + overlay-aware getSuite
+    │   ├── overrides.ts            # reads data/prompt-overrides.json; merges into getSuite()
+    │   └── agent-benchmark.ts      # 12 prompts × N targets, judged on 5 dimensions
     ├── cli/
-    │   └── run.ts                 # `pnpm eval <suite> [--models=…] [--limit=N]`
-    └── app/                       # Next.js dashboard
-        ├── page.tsx               # /  — runs index (status pill, New-run button)
-        ├── new/                   # /new — agents × providers selector + case-limit
-        ├── prompts/               # /prompts — per-case editor over the overlay JSON
+    │   └── run.ts                  # `pnpm eval <suite> [--models=…] [--limit=N]`
+    └── app/                        # Next.js dashboard
+        ├── page.tsx                # /  — runs index (status pill, New-run button)
+        ├── new/                    # /new — agents × models × providers selector
+        ├── prompts/                # /prompts — per-case editor over the overlay JSON
         ├── actions/
-        │   ├── start-run.ts       # kick off a run
-        │   └── edit-prompt.ts     # save/reset overlay entries
-        ├── runs/[id]/             # per-run detail + case drawer + auto-refresh
-        └── compare/               # metrics matrix + provider delta + charts
+        │   ├── start-run.ts        # kick off a run
+        │   └── edit-prompt.ts      # save/reset overlay entries
+        ├── runs/[id]/              # per-run detail + case drawer + auto-refresh
+        └── compare/                # metrics matrix + provider delta + charts
 ```
