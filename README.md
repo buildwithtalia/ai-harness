@@ -255,7 +255,31 @@ pnpm eval:list                                         # list available suites
 
 ## Release-autopilot skill handshake
 
-This harness is the benchmark backend for the release-autopilot skill in [Postman-Devrel/devrel-claude-code-skills PR #3](https://github.com/Postman-Devrel/devrel-claude-code-skills/pull/3) (`model-context-graph-comparison`). The skill detects new model / framework releases; the harness runs the numbers.
+This harness is the benchmark backend for the release-autopilot skill in [Postman-Devrel/devrel-claude-code-skills PR #3](https://github.com/Postman-Devrel/devrel-claude-code-skills/pull/3) (`model-context-graph-comparison`).
+
+> Every time a new AI model or coding framework ships, we want a data-backed post out the door within an hour: **"Postman's context graph makes `<model>` X% better at APIs, Y% cheaper per task, Z% more autonomous."** The skill runs the ai-harness, produces the visuals, posts to social, and regenerates the harness config to use the new model as its default.
+
+### Who owns what
+
+| Stage | Owner | How it lands in this repo |
+|---|---|---|
+| 1. **Detect** a new model / framework release | Skill (hourly cron over a watchlist of vendor blogs, GitHub releases, HuggingFace trending) | — |
+| 2. **Run the ai-harness** against the new model | Skill triggers → harness runs | `workflow_dispatch` or `repository_dispatch` on `.github/workflows/on-model-release.yml`; harness runs `agent-benchmark` across every registered `(agent × provider)` target |
+| 3. **Produce the visuals** for the study | Skill — reads `results/skill-input.json` or the webhook payload and generates the charts | Harness emits the raw numbers; chart rendering is the skill's job |
+| 4. **Post to social** (X / LinkedIn / blog / Discord) | Skill — using its own credential set | — |
+| 5. **Regenerate the harness config** so the new model becomes the default | Harness | `on-model-release.yml` commits the `MODEL` constant bump in the relevant adapter back to `main` with `[skip ci]`, so tomorrow's nightly and every subsequent run pick up the new default |
+
+### How the tagline gets computed
+
+The X / Y / Z percentages in the post come straight out of `results/skill-input.json`:
+
+| Tagline claim | Field | How the skill derives the % |
+|---|---|---|
+| **"X% better at APIs"** | `providerDeltas[].meanScoreDelta` or `passRateDelta` | The skill picks the `providerId` under test (usually `cg`), filters `perCategoryByTarget` to `category === "build"` or `"ask"` for API-shaped work, and takes the mean delta across agents. Positive = the provider made the model better. |
+| **"Y% cheaper per task"** | `providerDeltas[].costDelta` combined with `aggregate.perModel[target].totalCostUsd` | Cost-per-passed-case: `totalCostUsd / passCount` for base vs `+provider`; the tagline reports the percentage reduction. |
+| **"Z% more autonomous"** | `runs/<id>/cases.jsonl` → `diagnostics.toolCallCount` + `stepCount` | Autonomy is agent-side: fewer tool calls / steps to reach the same quality means the model + provider needed less prodding. The skill computes `(baseline_calls − provider_calls) / baseline_calls` at equal-or-higher score. |
+
+The harness emits the raw numbers so the skill can pick the framing that lands cleanest on a given post. If a claim can't be substantiated from the JSON, the skill's guardrails halt the post.
 
 ### Two directions
 
