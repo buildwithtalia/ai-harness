@@ -1,0 +1,106 @@
+name: on-model-release
+
+# Entrypoint the release-autopilot skill calls to benchmark a new model or
+# framework drop. See:
+#   https://github.com/Postman-Devrel/devrel-claude-code-skills/pull/3
+#
+# Trigger the skill can use:
+#   * workflow_dispatch (manual or via `gh workflow run on-model-release.yml`)
+#   * repository_dispatch with event_type "new-model-release" and
+#     client_payload matching the inputs below (POST /repos/.../dispatches)
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "New model identifier (e.g. anthropic/claude-5-opus)"
+        required: true
+      adapter:
+        description: "Which slot to update: claude | codex | devin | cursor | raw"
+        required: false
+        default: "raw"
+      releaseUrl:
+        description: "Vendor release / model-card URL (recorded on the run)"
+        required: false
+      dispatchedBy:
+        description: "Free-form label for the caller (e.g. 'skill:model-context-graph-comparison')"
+        required: false
+  repository_dispatch:
+    types: [new-model-release]
+
+concurrency:
+  group: on-model-release-${{ github.event.inputs.model || github.event.client_payload.model }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      AI_GATEWAY_API_KEY:       ${{ secrets.AI_GATEWAY_API_KEY }}
+      DEVIN_API_KEY:            ${{ secrets.DEVIN_API_KEY }}
+      CURSOR_API_KEY:           ${{ secrets.CURSOR_API_KEY }}
+      CURSOR_REPOSITORY:        ${{ secrets.CURSOR_REPOSITORY }}
+      CONTEXT_GRAPH_API_URL:    ${{ secrets.CONTEXT_GRAPH_API_URL }}
+      CONTEXT_GRAPH_API_KEY:    ${{ secrets.CONTEXT_GRAPH_API_KEY }}
+      ORBIT_API_URL:            ${{ secrets.ORBIT_API_URL }}
+      ORBIT_API_KEY:            ${{ secrets.ORBIT_API_KEY }}
+      SKILL_WEBHOOK_URL:        ${{ secrets.SKILL_WEBHOOK_URL }}
+      SKILL_WEBHOOK_TOKEN:      ${{ secrets.SKILL_WEBHOOK_TOKEN }}
+      SKILL_TRIGGER_MODEL:      ${{ github.event.inputs.model || github.event.client_payload.model }}
+      SKILL_TRIGGER_ADAPTER:    ${{ github.event.inputs.adapter || github.event.client_payload.adapter }}
+      SKILL_TRIGGER_RELEASE_URL: ${{ github.event.inputs.releaseUrl || github.event.client_payload.releaseUrl }}
+      SKILL_TRIGGER_DISPATCHED_BY: ${{ github.event.inputs.dispatchedBy || github.event.client_payload.dispatchedBy || github.event.action }}
+      GH_TOKEN:                 ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Apply model update
+        run: |
+          node scripts/apply-model-update.mjs \
+            --model="$SKILL_TRIGGER_MODEL" \
+            --adapter="${SKILL_TRIGGER_ADAPTER:-raw}"
+
+      - name: Type-check
+        run: pnpm build
+
+      - name: Run agent-benchmark
+        run: pnpm eval agent-benchmark
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: on-model-release-${{ github.run_id }}
+          path: |
+            runs/
+            results/skill-input.json
+          retention-days: 30
+
+      - name: Commit adapter change on success
+        if: success()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain src/core/agents/ src/evals/agent-benchmark.ts)" ]; then
+            git add src/core/agents/ src/evals/agent-benchmark.ts
+            git commit -m "eval: ${SKILL_TRIGGER_MODEL} on agent-benchmark [skip ci]"
+            git push
+          else
+            echo "No adapter change to commit."
+          fi

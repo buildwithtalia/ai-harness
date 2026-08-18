@@ -39,6 +39,9 @@ yarn-error.log*
 # eval artifacts
 /runs
 
+# ephemeral post-run skill hook output (regenerated every run)
+/results/skill-input.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

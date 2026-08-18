@@ -236,6 +236,78 @@ pnpm eval agent-benchmark --limit=2                    # smoke run
 pnpm eval:list                                         # list available suites
 ```
 
+## Release-autopilot skill handshake
+
+This harness is the benchmark backend for the release-autopilot skill in [Postman-Devrel/devrel-claude-code-skills PR #3](https://github.com/Postman-Devrel/devrel-claude-code-skills/pull/3) (`model-context-graph-comparison`). The skill detects new model / framework releases; the harness runs the numbers.
+
+### Two directions
+
+**Skill → harness.** The skill triggers `.github/workflows/on-model-release.yml`, either as `workflow_dispatch` or `repository_dispatch` (`event_type: new-model-release`). Payload / inputs:
+
+| Field | Meaning |
+|---|---|
+| `model` (required) | New model identifier (e.g. `anthropic/claude-5-opus`) |
+| `adapter` | Which slot to update: `claude` / `codex` / `devin` / `cursor` swaps the `MODEL` constant in `src/core/agents/<adapter>.ts`; `raw` (default) appends the model to `src/evals/agent-benchmark.ts`'s `models` list as a new raw-model target |
+| `releaseUrl` | Vendor release / model-card URL — recorded on the run |
+| `dispatchedBy` | Free-form caller label (e.g. `skill:model-context-graph-comparison`) |
+
+`repository_dispatch` from another repo needs a PAT with `repo` scope on `buildwithtalia/ai-harness`. The workflow applies the change via `scripts/apply-model-update.mjs`, runs `pnpm build` + `pnpm eval agent-benchmark`, uploads artifacts, and commits the adapter change with `[skip ci]` on success.
+
+**Harness → skill.** Every completed run — from the CLI, from the `/new` UI, or from any workflow — writes `results/skill-input.json` (gitignored) with the manifest + per-category rollups + per-provider deltas + trigger context. If `SKILL_WEBHOOK_URL` is configured, the runner also POSTs the same payload (with optional `SKILL_WEBHOOK_TOKEN` bearer auth) so the skill's downstream stages (write study, generate charts, post) can consume it without watching the workflow. See `src/core/skill-hook.ts` for the exact shape.
+
+### Payload shape (`results/skill-input.json`)
+
+```json
+{
+  "runId": "2026-08-18T21-14-02-118Z__agent-benchmark",
+  "suite": "agent-benchmark",
+  "status": "completed",
+  "startedAt": "2026-08-18T21:14:02.118Z",
+  "finishedAt": "2026-08-18T21:47:33.401Z",
+  "models": ["claude", "claude+cg", "claude+orbit", ...],
+  "caseCount": 12,
+  "aggregate": { "perModel": { ... } },
+  "perCategoryByTarget": [
+    { "target": "claude", "category": "build", "passRate": 0.6, "meanScore": 0.71, "caseCount": 5 },
+    ...
+  ],
+  "providerDeltas": [
+    { "agent": "claude", "providerId": "cg", "passRateDelta": 0.10, "meanScoreDelta": 0.09, "costDelta": 0.02, "p50LatencyDelta": 340 },
+    { "agent": "claude", "providerId": "orbit", ... },
+    ...
+  ],
+  "triggerContext": {
+    "modelId": "anthropic/claude-5-opus",
+    "adapterChanged": "claude",
+    "releaseUrl": "https://www.anthropic.com/news/claude-5-opus",
+    "workflowRunUrl": "https://github.com/.../actions/runs/1234",
+    "dispatchedBy": "skill:model-context-graph-comparison"
+  },
+  "emittedAt": "2026-08-18T21:47:33.415Z"
+}
+```
+
+### Secrets the skill needs to set
+
+On `buildwithtalia/ai-harness`, Settings → Secrets and variables → Actions:
+
+| Secret | Purpose |
+|---|---|
+| `SKILL_WEBHOOK_URL` | The skill's inbound URL for post-run notifications (skip if the skill polls artifacts instead) |
+| `SKILL_WEBHOOK_TOKEN` | Optional Bearer token the skill validates on inbound webhooks |
+| `ORBIT_API_URL`, `ORBIT_API_KEY` | Needed for any `+orbit` composed target in a release run |
+
+On the skill's side, invoking the harness with `repository_dispatch`:
+
+```bash
+gh api repos/buildwithtalia/ai-harness/dispatches \
+  -f event_type=new-model-release \
+  -F 'client_payload[model]=anthropic/claude-5-opus' \
+  -F 'client_payload[adapter]=claude' \
+  -F 'client_payload[releaseUrl]=https://www.anthropic.com/news/claude-5-opus' \
+  -F 'client_payload[dispatchedBy]=skill:model-context-graph-comparison'
+```
+
 ## Continuous integration
 
 Two GitHub Actions workflows live under `.github/workflows/`:

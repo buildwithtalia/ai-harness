@@ -2,6 +2,7 @@ import { generateText, stepCountIs, type LanguageModelUsage, type ModelMessage }
 import { getModel } from "./providers"
 import { estimateCostUsd } from "./cost"
 import { getAgent, isAgentId, type AgentContext } from "./agents"
+import { notifySkill } from "./skill-hook"
 import {
   appendCase,
   ensureRunDir,
@@ -297,6 +298,8 @@ async function executeRun(
       },
     }
     await writeManifest(id, manifest)
+    const allCases = models.flatMap((m) => perModelResults[m])
+    await notifySkill(manifest, allCases)
     return manifest
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
