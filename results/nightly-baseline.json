@@ -1,6 +1,6 @@
 {
-  "runId": "2026-08-19T07-16-46-929Z__agent-benchmark",
-  "finishedAt": "2026-08-19T07:16:47.009Z",
+  "runId": "2026-08-20T07-17-45-510Z__agent-benchmark",
+  "finishedAt": "2026-08-20T07:17:45.583Z",
   "meanPassRate": 0,
   "perModelPassRate": {
     "claude": 0,
