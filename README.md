@@ -425,7 +425,7 @@ This is what `graders/01-subjective-judge.md` prescribes. It also costs ~3× les
 
 ### Contamination
 
-All four fixtures are public and almost certainly in pretraining corpora. **Absolute scores are inflated by memorisation and should not be reported as "model X scores N on real codebases."** The A/B is partially protected — both arms are equally contaminated — but a graph that mostly resurfaces memorised knowledge would still look better than it is. `Fixture.contamination` records this, and `CANARY` in `src/evals/fixtures.ts` is a leak tripwire.
+All four fixtures are public and almost certainly in pretraining corpora. **Absolute scores are inflated by memorisation and should not be reported as "model X scores N on real codebases."** The A/B is partially protected — both arms are equally contaminated — but a graph that mostly resurfaces memorised knowledge would still look better than it is. `Fixture.contamination` records this per repo.
 
 Treat the paired delta as the result and the absolute number as indicative only.
 
@@ -765,7 +765,7 @@ The CLI runs everything through the same `runSuite` used by `/new`, so artifacts
 - `id`, `metadata.category` — case identity and rubric routing.
 - `groundTruth.checks` — Zod schemas can't serialise to JSON safely.
 - `judgeRubric` — usually resolved by category anyway.
-- `tools`, `expectedToolSequence` — tool-use case shape.
+- `tools` — per-case tool override; defaults to the standard repo toolset.
 
 ### UI signals
 
@@ -1103,8 +1103,6 @@ Adding a second provider is one file + one line in `src/core/context-providers/i
     │   │   ├── repo-grounding.ts   # generic scorer over repo-facts
     │   │   ├── batch-judge.ts      # batched, shuffled, anonymised judging
     │   │   ├── judge.ts            # per-cell judge + independent-judge picker
-    │   │   ├── exact.ts            # legacy exact / regex / contains
-    │   │   └── toolTrace.ts        # tool-sequence validator
     │   ├── artifacts.ts            # read/write runs/ + live heartbeats + zombie reaper
     │   ├── concurrency.ts          # pool bounds + drainPool worker pool
     │   ├── stats.ts                # paired McNemar + bootstrap CI

@@ -36,9 +36,7 @@ export type EvalCase = {
   ticket?: string
   difficulty?: Difficulty
   capabilityAxis?: CapabilityAxis[]
-  expected?: string | RegExp
   tools?: ToolSet
-  expectedToolSequence?: string[]
   judgeRubric?: JudgeRubric
   /**
    * Deterministic ground-truth checks (APIFlow-Bench "grade the result").

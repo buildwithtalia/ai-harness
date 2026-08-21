@@ -40,10 +40,6 @@ export function ensureIngested(
   return job
 }
 
-/** Test seam: drop memoised ingests. */
-export function resetIngestCache(): void {
-  ingests.clear()
-}
 
 export type {
   ContextProvider,

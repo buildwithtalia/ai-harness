@@ -135,12 +135,9 @@ export function citedLinesReal(min = 1): GroundTruthCheck {
  * model guessing "there's probably an openapi.yaml" fails on repos where there
  * isn't one.
  */
-export function namesRealArtifacts(re: RegExp, min: number, label: string): GroundTruthCheck {
-  return citesRealFilesMatching(re, min, label)
-}
 
 /** Pull the last fenced ```diff / ```patch block out of an answer. */
-export function extractPatch(text: string): string | null {
+function extractPatch(text: string): string | null {
   const fenced = [...text.matchAll(/```(?:diff|patch)\s*\n([\s\S]*?)```/gi)]
   for (let i = fenced.length - 1; i >= 0; i--) {
     const body = fenced[i][1]
