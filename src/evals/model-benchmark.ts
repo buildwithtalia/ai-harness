@@ -205,8 +205,37 @@ void baseIdOf // keep helper exportable-shaped; unused directly
 // fails at module load rather than quietly running judge-only.
 assertFullCoverage(BASE_CASES.map((c) => String(c.metadata?.subtask)))
 
+/**
+ * The surfaces every base prompt fans across.
+ *
+ * Three single repos plus one estate. healthcare-org-app is an estate rather
+ * than a repo because the customer's codebase is 104 repos — pointing a prompt
+ * at `healthcare-infra` alone was answering a question about one repo and
+ * calling it the project.
+ *
+ * A prompt does not care which kind it got: single repos arrive via
+ * `context.repoUrl`, estates via `metadata.estate`, and `resolveWorkspace`
+ * handles both. Only the ground-truth checks distinguish them.
+ */
+const SURFACES = [
+  ...FIXTURES.map((f) => ({
+    id: f.id,
+    label: f.label,
+    ref: f.ref,
+    estate: undefined as string | undefined,
+    context: { repoUrl: f.repoUrl },
+  })),
+  ...listEstates().map((e) => ({
+    id: e.id,
+    label: e.label,
+    ref: e.ref,
+    estate: e.id,
+    context: { text: `Estate: ${e.displayName}. ${e.description}` },
+  })),
+]
+
 const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
-  FIXTURES.map((f) => ({
+  SURFACES.map((f) => ({
     ...base,
     groundTruth: GROUND_TRUTH_BY_SUBTASK[String(base.metadata?.subtask)],
     id: `${baseId}-${f.id}`,
@@ -219,8 +248,9 @@ const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
       baseId,
       fixture: f.label,
       fixtureRef: f.ref,
+      ...(f.estate ? { estate: f.estate } : {}),
     },
-    context: { repoUrl: f.repoUrl },
+    context: f.context,
   })),
 )
 

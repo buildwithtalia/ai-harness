@@ -56,11 +56,15 @@ export default async function NewRunPage(props: PageProps<"/new">) {
       label: f.label,
       displayName: f.displayName,
       description: f.description,
+      kind: "repo" as const,
+      repoCount: 1,
     })),
     ...listEstates().map((e) => ({
       label: e.label,
       displayName: e.displayName,
-      description: `${e.repos.length} repos · ${e.description}`,
+      description: e.description,
+      kind: "estate" as const,
+      repoCount: e.repos.length,
     })),
   ]
 

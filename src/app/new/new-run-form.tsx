@@ -21,6 +21,9 @@ export type FixtureInfo = {
   label: string
   displayName: string
   description: string
+  /** A single repo, or an estate of N sibling repos checked out together. */
+  kind: "repo" | "estate"
+  repoCount: number
 }
 
 export type PromptInfo = {
@@ -231,6 +234,9 @@ export function NewRunForm({
     }
     return { cells: cells * targets.length, usd, unpriced }
   }, [selectedCases, epochs, targets, models, costAssumptions])
+
+  const singleRepos = useMemo(() => fixtures.filter((f) => f.kind !== "estate"), [fixtures])
+  const estates = useMemo(() => fixtures.filter((f) => f.kind === "estate"), [fixtures])
 
   const disabled =
     pending || targets.length === 0 || repos.size === 0 || selectedPrompts.size === 0
@@ -473,40 +479,53 @@ export function NewRunForm({
         ))}
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-sm font-medium">Repos</h2>
-          <span className="text-xs text-muted-foreground tabular-nums">
-            {repos.size}/{fixtures.length} selected
-          </span>
+      {/* Two groups, not one list. A single repo and an estate that happens to
+          contain related repos are different kinds of target, and flattening
+          them made `healthcare` and its two estates read as three healthcare
+          repos rather than one repo plus two multi-repo checkouts. */}
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <div className="flex items-baseline justify-between">
+            <h2 className="text-sm font-medium">Repos</h2>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {singleRepos.filter((f) => repos.has(f.label)).length}/{singleRepos.length} selected
+            </span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Each base prompt runs once per selected repo. Repos are cloned at a pinned SHA and
+            shared read-only across cells; the model reads them with its tools, and the URL is
+            passed to the context provider to scope retrieval.
+          </p>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {singleRepos.map((f) => (
+              <RepoOption key={f.label} f={f} checked={repos.has(f.label)} onToggle={toggleRepo} />
+            ))}
+          </div>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Each base prompt runs once per selected repo. Repos are cloned at a pinned SHA and
-          shared read-only across cells; the model reads them with its tools, and the URL is
-          passed to the context provider to scope retrieval. Estates (multi-repo) are listed
-          alongside single repos — only cross-repo prompts run against them.</p>
-        <div className="grid gap-1.5 sm:grid-cols-2">
-          {fixtures.map((f) => (
-            <label
-              key={f.label}
-              className="flex cursor-pointer items-start gap-2 rounded border px-2.5 py-2 text-xs"
-              title={f.description}
-            >
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={repos.has(f.label)}
-                onChange={() => toggleRepo(f.label)}
-              />
-              <span className="min-w-0">
-                <span className="font-mono block truncate">{f.displayName}</span>
-                <span className="text-muted-foreground">{f.label}</span>
+
+        {estates.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-baseline justify-between">
+              <h2 className="text-sm font-medium">Estates</h2>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {estates.filter((f) => repos.has(f.label)).length}/{estates.length} selected
               </span>
-            </label>
-          ))}
-        </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Several sibling repos checked out side by side, so a question can span them. Only
+              cross-repo prompts run here — the single-repo prompts above ignore these entirely.
+              An estate is one target, not one per member.
+            </p>
+            <div className="grid gap-1.5 sm:grid-cols-2">
+              {estates.map((f) => (
+                <RepoOption key={f.label} f={f} checked={repos.has(f.label)} onToggle={toggleRepo} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {repos.size === 0 && (
-          <p className="text-xs text-destructive">Select at least one repo.</p>
+          <p className="text-xs text-destructive">Select at least one repo or estate.</p>
         )}
         {[...repos].map((r) => (
           <input key={r} type="hidden" name="repos" value={r} />
@@ -630,5 +649,33 @@ export function NewRunForm({
         </p>
       </div>
     </form>
+  )
+}
+
+/** One repo/estate checkbox. Estates show their member count, which is the
+ * whole reason they look different from a repo of the same name. */
+function RepoOption({
+  f,
+  checked,
+  onToggle,
+}: {
+  f: FixtureInfo
+  checked: boolean
+  onToggle: (label: string) => void
+}) {
+  return (
+    <label
+      className="flex cursor-pointer items-start gap-2 rounded border px-2.5 py-2 text-xs"
+      title={f.description}
+    >
+      <input type="checkbox" className="mt-0.5" checked={checked} onChange={() => onToggle(f.label)} />
+      <span className="min-w-0">
+        <span className="font-mono block truncate">{f.displayName}</span>
+        <span className="text-muted-foreground">
+          {f.label}
+          {f.kind === "estate" && ` · ${f.repoCount} repos`}
+        </span>
+      </span>
+    </label>
   )
 }

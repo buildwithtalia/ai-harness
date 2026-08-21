@@ -100,7 +100,7 @@ Each `EvalCase` carries:
 
 ### Both axes, together
 
-Every cell in a run corresponds to one **`(target, case)`** pair, where a target is a parsed `(model, providerId)` pair. The default suite is 12 base prompts × 4 fixture repos + 1 cross-repo prompt × 2 estates = 50 cases, and 4 models × 2 arms = 8 targets — so **400 cells** per epoch (1,200 at the default 3 epochs). Each cell is a tool-calling loop (up to `maxSteps` — 40 by default, 150 on cross-repo cases) plus three scorers.
+Every cell in a run corresponds to one **`(target, case)`** pair, where a target is a parsed `(model, providerId)` pair. The default suite is 12 base prompts × 4 surfaces + 1 cross-repo prompt = 49 cases, and 4 models × 2 arms = 8 targets — so **392 cells** per epoch (1,176 at the default 3 epochs). Each cell is a tool-calling loop (up to `maxSteps` — 40 by default, 150 on cross-repo cases) plus three scorers.
 
 That is a lot to run at once, so scoping is the normal case: `--repos=` / the repo checkboxes on `/new` cut it by repo, `--models=` by target, `--limit=` by case count. Dropping the `+cg` arm from `ARMS` in `src/evals/model-benchmark.ts` halves it, though that also removes the comparison. `scopeSuite()` in `src/evals/index.ts` applies the repo filter *before* the limit, so `--repos=sentry --limit=3` means "the first three Sentry cases."
 
@@ -257,7 +257,7 @@ Still a stub: it reads its env vars, POSTs `{ prompt, repoUrl, repoPath }`, and 
 
 ## Prompts
 
-The suite `model-benchmark` (`src/evals/model-benchmark.ts`) ships **12 base prompts × 4 fixture repos = 48 cases**, plus **1 cross-repo prompt × 2 estates = 2 cases** — 50 in total. Every single-repo prompt is domain-neutral, so the same text is meaningful against any of the four fixtures.
+The suite `model-benchmark` (`src/evals/model-benchmark.ts`) ships **12 base prompts × 4 surfaces = 48 cases**, plus **1 cross-repo prompt = 1 case** — 49 in total. The four surfaces are three single repos (grafana, sentry, mattermost) and one estate (the 104-repo healthcare org). Every base prompt is domain-neutral, so the same text is meaningful against all four.
 
 ### Fixture repos
 
@@ -265,14 +265,13 @@ Defined in `src/evals/fixtures.ts`, ported from [APIFlow-Bench-benchmarks#12](ht
 
 | Suffix | Repo | Ref | Character |
 |---|---|---|---|
-| `-hc` | [`healthcare-org-app/healthcare-infra`](https://github.com/healthcare-org-app/healthcare-infra) | `main` | Regulated-industry app behind myhealthcare.dev. Small, private-shaped; ~104 sibling repos in the org. |
 | `-gr` | [`grafana/grafana`](https://github.com/grafana/grafana) | `main` | Observability platform (Go + TypeScript). User prefs, orgs, dashboards, versioned API; ~590 sibling repos. |
 | `-sn` | [`getsentry/sentry`](https://github.com/getsentry/sentry) | `master` | Production SaaS (Python/Django). Users, orgs, notification prefs, migrations; ~800 sibling repos. |
 | `-mm` | [`mattermost/mattermost`](https://github.com/mattermost/mattermost) | `master` | Team chat SaaS (Go + React). Channels, notification prefs, REST + OpenAPI spec; ~264 sibling repos. |
 
 Each fixture is cloned once at a pinned SHA and shared read-only across every cell that needs it (see [Workspaces](#workspaces)). The model reads it through tools; the context provider receives `repoUrl` so it can scope retrieval. Both arms see the identical checkout, so the only difference between them is the prefilled context — which is exactly the thing being measured.
 
-Case ids are `<category>-<NN>-<subtask>-<fixture>` (e.g. `build-01-add-field-to-api-sn`). Each row in the case matrix on `/runs/[id]` and `/compare` is one `(prompt, fixture)` pair; a full run fills 50 rows per target.
+Case ids are `<category>-<NN>-<subtask>-<fixture>` (e.g. `build-01-add-field-to-api-sn`). Each row in the case matrix on `/runs/[id]` and `/compare` is one `(prompt, fixture)` pair; a full run fills 49 rows per target.
 
 ### Build (5 base prompts, ×4 fixtures = 20 cases)
 
@@ -301,33 +300,31 @@ Case ids are `<category>-<NN>-<subtask>-<fixture>` (e.g. `build-01-add-field-to-
 | `ask-03-docs-drift` | medium | docs_alignment, discovery | Every endpoint where docs disagree with code (status codes, shapes, side effects). |
 | `ask-04-owasp-security` | hard | security_review, authentication, discovery | OWASP API Top 10 review. Ships **deterministic ground truth**: JSON schema requiring ≥3 findings with `owaspId` enum + `file:line` refs + exploit + downstream. |
 
-### Cross-repo (1 base prompt, ×2 estates = 2 cases)
+### Cross-repo (1 base prompt × 1 estate = 1 case)
 
 | Base id | Difficulty | Axes | Focus |
 |---|---|---|---|
-| `xrepo-01-blast-radius` | hard | impact_analysis, discovery, multistep | `GET /patients/{id}` is changing shape — name every service in the estate that calls it, with `file:line` evidence. Ships **set-answer ground truth**: recall + precision against a derived key. |
+| `xrepo-01-blast-radius` | hard | impact_analysis, discovery, multistep | `GET /patients/{id}` is changing shape — name every service in the 104-repo estate that calls it, with `file:line` evidence. Ships **set-answer ground truth**: recall + precision against a generated key (37 true callers, 63 non-callers). |
 
 This is the only prompt in the suite that the [Context Graph Benchmarking report](#the-report-value-map) found the graph meaningfully helps with, and the only one that runs against an **estate** rather than a single repo.
 
 ### Estates
 
-An estate is N sibling repos checked out side by side under one parent directory, so tool paths are repo-qualified (`healthcare-vitals/src/client.py`). Defined in `src/evals/fixtures.ts`, derived from `src/evals/answer-keys.ts`.
+An estate is several repos checked out side by side under one parent directory, so tool paths are repo-qualified (`healthcare-vitals/src/client.py`) and a question can span the tree.
 
-| Id | Label | Repos | Composition |
+| Id | Label | Repos | What it is |
 |---|---|---|---|
-| `hcs` | `healthcare-estate-sm` | 13 | 1 target + 6 callers + 6 distractors |
-| `hcl` | `healthcare-estate-lg` | 39 | 1 target + 20 callers + 18 distractors |
+| `hc` | `healthcare` | **104** | The entire `healthcare-org-app` org |
 
-Two sizes because scale is the axis the report found the effect on: its no-graph baseline decayed 74% → 58% recall as the estate grew 27 → 126 repos, while the graph held ~99%. If that trend is real here, `hcl` should show a wider gap than `hcs`.
+**healthcare is an estate, not a repo.** The customer's codebase is 104 repos; pointing a prompt at `healthcare-infra` alone was answering a question about one repo and calling it the project. All 12 single-repo prompts run against the estate too — they simply see 104 roots instead of one.
 
-**Two design decisions carry the whole case:**
+Earlier revisions sampled two synthetic slices (13 and 39 repos), each built as *target + N callers + M distractors*. That was wrong twice: it put three healthcare entries on the run form for one project, and the harness was choosing the size, the membership and the caller-to-distractor ratio — three knobs that let a benchmark be tuned until it reports what you hoped. The whole org has no knobs. Precision still works without curated distractors, because the 63 services that don't call the target are already in it.
 
-1. **The registry repo is excluded.** `healthcare-infra/registry.yaml` lists every `http_deps` edge in the org in one file. An estate containing it turns the task into "grep one YAML" and both arms score ~100% — the comparison measures nothing. With it out, the only evidence that X calls the target lives in **X's own repo**, so the answer has to be reconstructed across repos. That is precisely the shape the report describes as the graph's advantage.
-2. **Non-callers are included as distractors.** Without them, a model that lists every repo name scores perfect recall. The report tracks precision because the graph invented zero services while file-search "hallucinates service names at scale"; distractors are what make that measurable. Verified: a shotgun answer naming all 13 `hcs` members scores recall 1.00, precision 0.50 (6 false positives) and so fails the 0.70 precision gate. Distractors carry their own alias map, because a model names repositories (`healthcare-vitals`) at least as often as services (`vitals-service`).
+Cloning all 104 takes ~24s cold (≈25 MB, depth 1, 6 at a time) and is cached across runs.
 
-Answer keys are **generated, not hand-curated** — `pnpm tsx scripts/derive-answer-keys.mts` reads the registry at a pinned SHA and writes `src/evals/answer-keys.ts`. The report hand-curated its ground truth; deriving it gets the same thing without a curator silently missing an edge.
+The answer key is generated, not hand-written — `pnpm tsx scripts/derive-answer-keys.mts` reads `registry.yaml` at a pinned SHA and writes `src/evals/answer-keys.ts`: 37 services declare a dependency on `patients-service`, 63 do not.
 
-A failing member is **omitted with a warning** rather than failing the estate: losing 1 of 39 clones degrades the measurement slightly, while aborting loses it entirely.
+> **Known leak.** `healthcare-infra` is a member, and its `registry.yaml` lists every dependency edge in the org in one file — so "who calls X" is one grep. Prior revisions excluded that repo to prevent exactly this, which made the numbers look better by hiding a file the customer actually has. See [Known limitations](#known-limitations).
 
 ### The strengthened baseline
 
@@ -372,7 +369,7 @@ Two cautions when editing it in `/prompts`:
 
 ## Statistics
 
-**Two pass rates side by side are not a finding.** Every cell is a draw from a stochastic process, so a 5-point gap across 50 cases at one sample each is comfortably inside noise. Reporting it as a win produces a number that doesn't replicate.
+**Two pass rates side by side are not a finding.** Every cell is a draw from a stochastic process, so a 5-point gap across 49 cases at one sample each is comfortably inside noise. Reporting it as a win produces a number that doesn't replicate.
 
 Three things make the comparison legible:
 
@@ -628,7 +625,7 @@ The [value map](#the-report-value-map) says which buckets *should* move. A win i
 
 ### 5. The sentence you can then defend
 
-> On cross-repo blast-radius tasks over a 39-repo estate, `openai/gpt-5+cg` recovered **94%** of true callers versus **58%** for `openai/gpt-5` — a **+36 pp** difference (95% CI +28 to +43 pp, exact McNemar p=0.002, n=60 paired cells at 3 epochs), measured against a generated answer key at a pinned SHA, with an identical prompt and tool set in both arms.
+> On cross-repo blast-radius tasks over the 104-repo healthcare estate, `openai/gpt-5+cg` recovered **94%** of true callers versus **58%** for `openai/gpt-5` — a **+36 pp** difference (95% CI +28 to +43 pp, exact McNemar p=0.002, n=60 paired cells at 3 epochs), measured against a generated answer key at a pinned SHA, with an identical prompt and tool set in both arms.
 
 Note the shape: **one model, one task type, one metric, an interval, and the conditions.** What you cannot say from this harness is "the Context Graph makes models 36% better" — the whole finding of the report is that the effect is confined to one bucket, and averaging across buckets manufactures a number that describes no real task.
 
@@ -641,7 +638,7 @@ Each of these has already bitten this harness at least once:
 | Ground truth reachable in one grep | Both arms near 100%, few tool calls | Registry repo excluded from estates; **see [Known limitations](#known-limitations)** |
 | Baseline prompt is a straw man | Implausibly large gap | `STRENGTHENED_SEARCH_STRATEGY` given to **both** arms |
 | Step budget truncates the baseline | Baseline stops mid-search | 150 steps on cross-repo cases (report: 90–133 tool calls) |
-| Recall-only scoring | A shotgun answer "wins" | Distractors in every estate; precision reported alongside |
+| Recall-only scoring | A shotgun answer "wins" | The estate contains 63 non-callers; precision reported alongside recall |
 | Infra failure scored as a model failure | Zeros that look like bad answers | Missing workspace errors the cell; `no-workspace` checks are skipped, not failed |
 | Judge sees which arm is which | Judge drift toward the longer answer | Batched, seeded-shuffled, anonymised judging |
 | n too small | A 6 pp "win" | Both gates + `insufficient data` under n=10 |
@@ -707,7 +704,7 @@ Every field on the form, in order:
 | **Suite** | `suite` | `model-benchmark` | Which suite to run. The dropdown shows each suite's case count; the suite description appears underneath. Changing it reloads the prompt and repo lists. |
 | **Models** | `models` (hidden, one per target) | none checked | A table, one row per catalog entry, with a checkbox per arm — `baseline` and one column per registered context provider (`+cg`). Checking **both** boxes for a model produces the A/B pair; the header shows a live pair count. One box alone still runs, it just isn't a comparison. `all` / `none` check or clear every runnable model. A model with no usable key is tagged **env missing** (hover for the variable); one with no published rate is tagged **unpriced** and is excluded from the cost estimate. If a provider's env is unset a banner warns that every `+cg` cell will error. |
 | **Prompts** | `prompts` (hidden, one per baseId) | all | Base prompts grouped by category (`build` / `find` / `ask`), with per-category and global `all`/`none`. Each row shows difficulty, capability axes, and how many ground-truth checks it carries. |
-| **Repos** | `repos` (hidden, one per label) | all | One checkbox per fixture repo **and per estate**. Each base prompt runs once per selected repo, so unchecking three of four cuts a single-repo run to a quarter. Cross-repo prompts only run against estates; unchecking the estates drops them entirely. |
+| **Repos** / **Estates** | `repos` (hidden, one per label) | all | Two separate groups: **Repos** (grafana, sentry, mattermost — one checkout each) and **Estates** (healthcare — 104 repos checked out together). They are one axis, split visually because a repo and a 104-repo estate are different kinds of target. Every base prompt runs once per selected surface; the cross-repo prompt only runs against an estate. |
 | **Case limit** | `limit` | blank (= all) | Caps total case count for a smoke run. Applied *after* repo and prompt filtering, so `--repos=hc --limit=2` means "the first two healthcare cases". |
 | **Epochs** | `epochs` | 3 | Repeats per `(target, case)`. **At 1 you cannot tell a real effect from sampling noise** — the paired statistics need repeated draws. Max 10. |
 | **Budget cap** | `budgetUsd` | blank (= no cap) | The run stops once *estimated* spend reaches this. Aggregates are then over a partial matrix and the manifest records `budgetStopped`. |
@@ -718,7 +715,7 @@ Below the fields:
 
 - **Targets preview** — the exact target ids that will run, baseline before `+cg` for each model.
 - **Estimated cost** — cells × per-cell token assumptions × the model's published rate, recomputed live. Cross-repo cases use a much larger token profile than single-repo ones (see [Cost](#cost-table)), so the estimate jumps when you enable an estate. Unpriced targets are listed as excluded.
-- **Submit** reads the full shape — `Start run (50 cases × 8 targets = 400 cells)`. The server action calls `beginRun`, gets the id, redirects to `/runs/[id]`, and leaves the promise running as background work.
+- **Submit** reads the full shape — `Start run (49 cases × 8 targets = 392 cells)`. The server action calls `beginRun`, gets the id, redirects to `/runs/[id]`, and leaves the promise running as background work.
 
 Because the run lives in the dev-server process, a restart mid-run orphans it — the zombie reaper flips it to `errored` about a minute later rather than leaving it spinning.
 
@@ -1017,11 +1014,11 @@ The public [`postmanlabs/APIFlow-Bench`](https://github.com/postmanlabs/APIFlow-
 
 ## Known limitations
 
-Measured on the first real cross-repo run (2026-08-21, `openai/gpt-5` baseline, 3 epochs, both estates).
+Measured on the first real cross-repo run (2026-08-21, `openai/gpt-5` baseline, 3 epochs). That run used two sampled estates, since replaced by the single 104-repo one; the findings hold, and the leak is larger now that `healthcare-infra` is a member.
 
 ### The cross-repo task is currently solvable with one grep
 
-**This is the blocking issue for the headline comparison.** `gpt-5` scored **recall 1.00 on both estates** — 20/20 callers on the 39-repo estate in 24 tool calls. The report's baseline scored 58%.
+**This is the blocking issue for the headline comparison.** `gpt-5` scored **recall 1.00** — 20/20 callers in 24 tool calls. The report's baseline scored 58%.
 
 The cause: every caller declares the dependency as a literal, greppable string in its own `service.yaml`.
 
@@ -1031,7 +1028,7 @@ http_deps:
 - patients-service        # ← one grep across the estate root finds all 20
 ```
 
-Excluding the central `registry.yaml` was necessary but not sufficient — each member repo carries a *mini-registry* with the same token, and because the estate is one directory tree, `grep` walks all 39 repos in a **single** call. The premise "the answer must be reconstructed across repos" is technically true and practically free.
+The estate now includes `healthcare-infra`, so `registry.yaml` answers the question outright. Even without it the leak stands: each member repo carries a *mini-registry* (`service.yaml`) naming the same token, and because the estate is one directory tree, `grep` walks all 104 repos in a **single** call. The premise "the answer must be reconstructed across repos" is technically true and practically free.
 
 The report's premise was different: callers are hard to find because calls go through client wrappers, dynamically-built paths, and config-supplied base URLs, so the literal service name never appears in the caller's source. This fixture has a machine-readable manifest that names it outright.
 
@@ -1050,18 +1047,18 @@ question, pending the Context Graph API contract.
 
 > Approach I used: 1) Enumerated all 13 sibling repositories (search space): healthcare-api-gateway, healthcare-auth, …
 
-Every distractor in that list is scored as a false positive. All three `hcs` cells reported precision 0.50 with six "false positives" the model never actually claimed were callers. **Recall is unaffected; precision is currently not trustworthy.** The fix is to derive claims from a structured conclusion (a fenced JSON list, or only names carrying a `file:line` citation) rather than from free text.
+Every distractor in that list is scored as a false positive. All three small-estate cells reported precision 0.50 with six "false positives" the model never actually claimed were callers. **Recall is unaffected; precision is currently not trustworthy.** The fix is to derive claims from a structured conclusion (a fenced JSON list, or only names carrying a `file:line` citation) rather than from free text.
 
 ### Fixed during that run
 
-- **Unbounded estate clone fan-out.** The 39- and 13-repo estates resolved concurrently at 52 simultaneous `git fetch`es; GitHub throttled them, every member of the small estate failed, and all three of its cells ran tool-less. The model correctly answered "I don't have access to these repositories" and scored 0 — an infra failure that reads in the matrix as a model failure. Clones are now capped at 6.
+- **Unbounded estate clone fan-out.** Two estates resolved concurrently at 52 simultaneous `git fetch`es; GitHub throttled them, every member of the smaller one failed, and all three of its cells ran tool-less. The model correctly answered "I don't have access to these repositories" and scored 0 — an infra failure that reads in the matrix as a model failure. Clones are now capped at 6.
 - **Missing workspace no longer scores 0.** A case that requires a checkout and doesn't get one now errors the cell, keeping it out of the aggregate and out of the paired comparison.
 
 ## Waiting on
 
 Everything below is scaffolded but stubbed / provisional. The wiring is in place so filling each item in is a small localized change.
 
-- **Finalize prompts** — 12 base prompts fan across four fixture repos (48 cases) and 1 cross-repo prompt across two estates (2 cases). Waiting on final prompt wording and any additional cases. More repos slot in via `FIXTURES` in `src/evals/fixtures.ts`; each one adds 12 cases. More cross-repo prompts are the highest-value addition — it is the only bucket the report found the graph helps with.
+- **Finalize prompts** — 12 base prompts fan across four surfaces (48 cases) plus 1 cross-repo prompt (1 case). Waiting on final prompt wording and any additional cases. More repos slot in via `FIXTURES` in `src/evals/fixtures.ts`; each one adds 12 cases. More cross-repo prompts are the highest-value addition — it is the only bucket the report found the graph helps with.
 - **Tier-2 ground truth** — coverage is 12/12, but all of it is *generic* repo grounding plus prompt-declared contracts. Closed-form expected answers per (prompt, repo) — "the five highest-dependency endpoints in Mattermost are X" — would be sharper still. That's 48 hand-authored sets and they go stale as the pinned SHAs advance, so it's worth doing only for prompts with a genuinely stable answer.
 - **Model rates** — several catalog entries are `unpriced` (`gpt-5.6-sol`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-4.1`). They run fine but report $0.00; add `rates` to `src/core/models.ts` once the published pricing is confirmed.
 - **Context provider APIs** — `cg` (Postman Context Graph) is a stub. It reads `POSTMAN_CONTEXT_GRAPH_API_URL` + `POSTMAN_CONTEXT_GRAPH_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on the real endpoint URL, auth scheme, request/response contract. Once known, only `context-graph.ts` changes — the `+cg` target grammar, `/new`, runner, dashboard, diagnostics and delta matrix all already work.
@@ -1115,7 +1112,7 @@ Adding a second provider is one file + one line in `src/core/context-providers/i
     │   └── types.ts                # EvalSuite, EvalCase, Scorer, CaseResult, RunManifest
     ├── evals/
     │   ├── index.ts                # suite registry + overlay-aware getSuite + scopeSuite
-    │   ├── fixtures.ts             # four fixture repos + two estates, pinned SHAs + clone depth
+    │   ├── fixtures.ts             # 3 single repos + the 104-repo healthcare estate
     │   ├── answer-keys.ts          # GENERATED — estate membership + caller answer keys
     │   ├── value-map.ts            # report task-type buckets + expected verdicts
     │   ├── checks.ts               # reusable repo-grounded + set-answer check factories

@@ -60,20 +60,11 @@ export type Fixture = {
   contamination: "public-likely-memorised" | "private"
 }
 
+// healthcare-org-app is NOT here — it is an estate (see ESTATES below), because
+// the customer's codebase is 104 repos, not one. Listing `healthcare-infra` as a
+// single fixture alongside two sampled estates put three healthcare entries on
+// the run form for what is one project.
 export const FIXTURES: readonly Fixture[] = [
-  {
-    id: "hc",
-    label: "healthcare",
-    displayName: "healthcare-org-app/healthcare-infra",
-    repoUrl: "https://github.com/healthcare-org-app/healthcare-infra",
-    ref: "main",
-    sha: "cbbbccf0f8e9059e9efa301f50cd1a64a3ffe877",
-    // Tiny repo (<1 MB) — full history is free, so blame/log are trustworthy here.
-    depth: 0,
-    contamination: "public-likely-memorised",
-    description:
-      "Regulated-industry app backing myhealthcare.dev. Small, private-shaped. The org has ~104 sibling repos — useful cross-repo edges for a context graph.",
-  },
   {
     id: "gr",
     label: "grafana",
@@ -162,17 +153,17 @@ export type Estate = {
 export const ESTATES: readonly Estate[] = ANSWER_KEYS.map((k) => ({
   id: k.estateId,
   label: k.estateLabel,
-  displayName: `healthcare-org-app (${k.members.length}-service estate)`,
+  displayName: `healthcare-org-app (${k.members.length} repos)`,
   org: "healthcare-org-app",
   repos: k.members,
   ref: "main",
   depth: 1,
   contamination: "public-likely-memorised" as const,
   description:
-    `${k.members.length} sibling microservices. ${k.key.expected.length} of them call ` +
-    `${k.target}; ${k.distractors.length} do not. Each service declares only its own ` +
-    "outbound http_deps in its own service.yaml, so \"who calls X\" must be reconstructed " +
-    "across repos — the one configuration in which the July 2026 report found a graph advantage.",
+    `The entire healthcare-org-app estate — all ${k.members.length} repos, checked out side by ` +
+    `side. ${k.key.expected.length} services declare an outbound dependency on ${k.target}. ` +
+    "Each service declares only its own http_deps in its own service.yaml, so cross-repo " +
+    "questions span the whole tree rather than one checkout.",
 })) as readonly Estate[]
 
 export function listEstates(): readonly Estate[] {
