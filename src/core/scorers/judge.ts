@@ -3,6 +3,7 @@ import { gateway } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { z } from "zod"
+import { isModelConfigured } from "../models"
 import type { Scorer } from "../types"
 
 /**
@@ -44,6 +45,64 @@ function pickJudgeModel(explicit?: string): Picked {
   if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: GATEWAY_DEFAULT }
   if (process.env.CODEX_API_KEY) return { transport: "openai", model: OPENAI_DEFAULT }
   return { transport: "none", model: "" }
+}
+
+/**
+ * Choose a judge that is not itself under test.
+ *
+ * LLM judges favour their own outputs, so judging Opus with Opus biases that
+ * one row relative to every other model in the run. Falls back to the
+ * configured judge with a loud warning rather than silently picking something
+ * the caller didn't ask for.
+ */
+export function pickIndependentJudge(
+  suiteJudge: string | undefined,
+  targets: string[],
+): { judgeModel: string | undefined; warning?: string } {
+  // Env wins over the suite. This is the lever when the suite's judge is
+  // unavailable for a reason the harness can't see statically — an exhausted
+  // provider quota looks identical to a working key until you call it.
+  const override = process.env.AI_HARNESS_JUDGE_MODEL?.trim()
+  const configured = override || suiteJudge
+  if (!configured) return { judgeModel: undefined }
+  if (override) {
+    return {
+      judgeModel: override,
+      warning: `judge overridden by AI_HARNESS_JUDGE_MODEL=${override}`,
+    }
+  }
+
+  const bareTargets = new Set(targets.map((t) => t.split("+")[0]))
+  if (!bareTargets.has(configured)) return { judgeModel: configured }
+
+  // Prefer a different family entirely — a sibling model shares more of the
+  // same preferences than an unrelated one does.
+  const configuredFamily = configured.split("/")[0]
+  const alternatives = [
+    "openai/gpt-5",
+    "anthropic/claude-opus-4-7",
+    "google/gemini-2.5-pro",
+    "anthropic/claude-sonnet-4-5",
+  ]
+  // Only consider a model we actually have credentials for — swapping to one
+  // whose key is unset trades a biased judge for no judge at all.
+  const pick = alternatives.find(
+    (m) => !bareTargets.has(m) && m.split("/")[0] !== configuredFamily && isModelConfigured(m),
+  )
+  if (pick) {
+    return {
+      judgeModel: pick,
+      warning:
+        `judge '${configured}' is also a target in this run (self-preference bias) — ` +
+        `judging with '${pick}' instead. Set suite.judgeModel explicitly to override.`,
+    }
+  }
+  return {
+    judgeModel: configured,
+    warning:
+      `judge '${configured}' is also a target in this run and no independent alternative ` +
+      "is available — results for that model may be biased upward.",
+  }
 }
 
 export function llmJudge(opts?: { judgeModel?: string }): Scorer {

@@ -5,6 +5,7 @@ import type {
   GroundTruthCheck,
   Scorer,
 } from "../types"
+import type { Workspace } from "../workspace"
 
 /**
  * Deterministic scorer implementing APIFlow-Bench's "grade the result, not
@@ -16,28 +17,41 @@ import type {
 export function deterministic(): Scorer {
   return {
     name: "deterministic",
-    async run({ case: ec, output }) {
+    async run({ case: ec, output, workspace }) {
       const gt = ec.groundTruth
       if (!gt || !gt.checks.length) {
         return { score: null, label: "no-ground-truth" }
       }
       const results = await Promise.all(
-        gt.checks.map((c) => runCheck(c, output, ec)),
+        gt.checks.map((c) => runCheck(c, output, ec, workspace)),
       )
-      const total = results.length
-      const passed = results.filter((r) => r.pass).length
-      const rate = total ? passed / total : 0
+      // A check that needs the checkout and didn't get one is unscoreable, not
+      // failed. Clone failures are infrastructure, and the runner deliberately
+      // lets the cell proceed tool-less rather than erroring it — so counting
+      // those checks would silently record "the model got it wrong" for every
+      // case in the run and drag the arm comparison with it. `repoGrounding`
+      // already skips on `no-workspace`; this makes the two agree.
+      const scoreable = results.filter(
+        (r) => (r.details as { reason?: string } | undefined)?.reason !== "no-workspace",
+      )
+      const skipped = results.length - scoreable.length
+      const total = scoreable.length
+      const passed = scoreable.filter((r) => r.pass).length
+      const detail = {
+        checks: gt.checks.map((c, i) => ({
+          type: c.type,
+          description: describeCheck(c),
+          pass: results[i].pass,
+          skipped: (results[i].details as { reason?: string } | undefined)?.reason === "no-workspace",
+          details: results[i].details,
+        })),
+        ...(skipped ? { skippedNoWorkspace: skipped } : {}),
+      }
+      if (!total) return { score: null, label: "no-workspace", details: detail }
       return {
-        score: rate,
-        label: `${passed}/${total} checks`,
-        details: {
-          checks: gt.checks.map((c, i) => ({
-            type: c.type,
-            description: describeCheck(c),
-            pass: results[i].pass,
-            details: results[i].details,
-          })),
-        },
+        score: passed / total,
+        label: `${passed}/${total} checks${skipped ? ` (${skipped} skipped: no workspace)` : ""}`,
+        details: detail,
       }
     },
   }
@@ -65,6 +79,7 @@ async function runCheck(
   c: GroundTruthCheck,
   output: EvalOutput,
   ec: EvalCase,
+  ws?: Workspace,
 ): Promise<CheckResult> {
   switch (c.type) {
     case "must-mention": {
@@ -106,8 +121,16 @@ async function runCheck(
       return { pass: true, details: { parsed: parsed.data } }
     }
     case "custom": {
-      const res = await c.check(output, ec)
-      return res
+      // Repo-fact checks need the checkout; a clone failure must surface as a
+      // failed check, not a thrown scorer that kills the cell.
+      try {
+        return await c.check(output, ec, ws)
+      } catch (err) {
+        return {
+          pass: false,
+          details: { reason: "check-threw", message: err instanceof Error ? err.message : String(err) },
+        }
+      }
     }
   }
 }

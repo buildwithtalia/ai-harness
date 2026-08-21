@@ -38,14 +38,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Run agent-benchmark
-        run: pnpm eval agent-benchmark
+      - name: Run model-benchmark
+        run: pnpm eval model-benchmark
 
       - name: Upload run artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agent-benchmark-${{ github.run_id }}
+          name: model-benchmark-${{ github.run_id }}
           path: runs/
           retention-days: 30
 

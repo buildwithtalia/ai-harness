@@ -7,8 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "eval": "tsx --tsconfig tsconfig.json src/cli/run.ts",
-    "eval:list": "tsx --tsconfig tsconfig.json src/cli/run.ts --list"
+    "eval": "tsx --env-file-if-exists=.env.local --tsconfig tsconfig.json src/cli/run.ts",
+    "eval:list": "tsx --env-file-if-exists=.env.local --tsconfig tsconfig.json src/cli/run.ts --list"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.39",

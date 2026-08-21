@@ -1,15 +1,14 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { parseTargetId } from "@/core/agents/parse-target"
-import type { CaseResult, RunManifest } from "@/core/types"
+import { parseTargetId } from "@/core/target"
+import type { ArmComparison, CaseResult, RunManifest } from "@/core/types"
 
 const CATEGORIES = ["build", "find", "ask"] as const
 type Category = (typeof CATEGORIES)[number]
 
 export type MatrixRow = {
   target: string
-  agent: string
-  model: string | null
+  model: string
   providerId: string | null
   passRate: number
   meanScore: number
@@ -21,11 +20,17 @@ export type MatrixRow = {
   perCategory: Partial<Record<Category, number>>
 }
 
-function shortModel(model: string | null): string {
-  if (!model) return "—"
-  // Drop the provider prefix (`anthropic/`, `openai/`) so the column stays readable.
+function shortModel(model: string): string {
+  // Drop the family prefix (`anthropic/`, `openai/`) so the column stays
+  // readable; the full id is kept in the cell's title attribute.
   const slash = model.lastIndexOf("/")
   return slash >= 0 ? model.slice(slash + 1) : model
+}
+
+/** Family prefix (`anthropic`, `openai`, `google`) — used to band the table. */
+function familyOfTarget(model: string): string {
+  const slash = model.indexOf("/")
+  return slash > 0 ? model.slice(0, slash) : ""
 }
 
 type Goal = "max" | "min" | "none"
@@ -113,14 +118,7 @@ const COLUMNS: ColumnDef[] = [
   },
 ]
 
-function agentOf(target: string): {
-  agent: string
-  model: string | null
-  providerId: string | null
-} {
-  const parts = parseTargetId(target)
-  return { agent: parts.base, model: parts.model, providerId: parts.providerId }
-}
+
 
 function mean(nums: number[]): number {
   if (!nums.length) return 0
@@ -134,7 +132,7 @@ export function buildMatrixRows(
   const perModelAgg = manifest.aggregate.perModel
   const rows: MatrixRow[] = []
   for (const target of manifest.models) {
-    const { agent, model, providerId } = agentOf(target)
+    const { model, providerId } = parseTargetId(target)
     const forTarget = cases.filter((c) => c.model === target)
     const perCategory: MatrixRow["perCategory"] = {}
     for (const cat of CATEGORIES) {
@@ -144,7 +142,6 @@ export function buildMatrixRows(
     const agg = perModelAgg[target]
     rows.push({
       target,
-      agent,
       model,
       providerId,
       passRate: agg?.passRate ?? 0,
@@ -157,14 +154,14 @@ export function buildMatrixRows(
       perCategory,
     })
   }
-  // Group by (agent, model) so base + composed variants of the same
-  // (agent, model) pair sit adjacent, and different models of the same agent
-  // sit next to each other.
+  // Sort so each model's baseline sits directly above its +provider arms, and
+  // models of the same family group together. That adjacency is the whole
+  // point of the table — the A/B is read row-against-row.
   rows.sort((a, b) => {
-    if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
-    const am = a.model ?? ""
-    const bm = b.model ?? ""
-    if (am !== bm) return am.localeCompare(bm)
+    const af = familyOfTarget(a.model)
+    const bf = familyOfTarget(b.model)
+    if (af !== bf) return af.localeCompare(bf)
+    if (a.model !== b.model) return a.model.localeCompare(b.model)
     if (a.providerId == null) return -1
     if (b.providerId == null) return 1
     return a.providerId.localeCompare(b.providerId)
@@ -197,9 +194,8 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-[6rem]">Agent</TableHead>
-                <TableHead className="min-w-[10rem]">Model</TableHead>
-                <TableHead className="min-w-[5rem]">Provider</TableHead>
+                <TableHead className="min-w-[12rem]">Model</TableHead>
+                <TableHead className="min-w-[5rem]">Arm</TableHead>
                 {COLUMNS.map((c) => (
                   <TableHead key={c.key} className="text-right font-medium">
                     {c.label}
@@ -212,14 +208,12 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
             </TableHeader>
             <TableBody>
               {rows.map((r, ri) => {
-                const isNewAgent = ri > 0 && rows[ri - 1].agent !== r.agent
+                // Separate one model's block from the next so a baseline and
+                // its +cg arm read as a unit.
+                const isNewModel = ri > 0 && rows[ri - 1].model !== r.model
                 return (
-                  <TableRow key={r.target} className={isNewAgent ? "border-t-2" : undefined}>
-                    <TableCell className="font-mono text-xs">{r.agent}</TableCell>
-                    <TableCell
-                      className="font-mono text-xs text-muted-foreground"
-                      title={r.model ?? "adapter default"}
-                    >
+                  <TableRow key={r.target} className={isNewModel ? "border-t-2" : undefined}>
+                    <TableCell className="font-mono text-xs" title={r.model}>
                       {shortModel(r.model)}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
@@ -259,37 +253,31 @@ export function MetricsMatrix({ rows }: { rows: MatrixRow[] }) {
 }
 
 type DeltaRow = {
-  agent: string
-  model: string | null
+  model: string
   providerId: string
   base: MatrixRow
   composed: MatrixRow
 }
 
+/**
+ * Pair each `+provider` arm with the baseline arm of the *same model*. A model
+ * whose baseline wasn't run produces no delta row — there's nothing honest to
+ * compare it against.
+ */
 function pairsByProvider(rows: MatrixRow[]): DeltaRow[] {
   const bases = new Map<string, MatrixRow>()
-  const keyOf = (r: MatrixRow) => `${r.agent}@${r.model ?? ""}`
   for (const r of rows) {
-    if (r.providerId == null) bases.set(keyOf(r), r)
+    if (r.providerId == null) bases.set(r.model, r)
   }
   const out: DeltaRow[] = []
   for (const r of rows) {
     if (r.providerId == null) continue
-    const base = bases.get(keyOf(r))
+    const base = bases.get(r.model)
     if (!base) continue
-    out.push({
-      agent: r.agent,
-      model: r.model,
-      providerId: r.providerId,
-      base,
-      composed: r,
-    })
+    out.push({ model: r.model, providerId: r.providerId, base, composed: r })
   }
   out.sort((a, b) => {
-    if (a.agent !== b.agent) return a.agent.localeCompare(b.agent)
-    const am = a.model ?? ""
-    const bm = b.model ?? ""
-    if (am !== bm) return am.localeCompare(bm)
+    if (a.model !== b.model) return a.model.localeCompare(b.model)
     return a.providerId.localeCompare(b.providerId)
   })
   return out
@@ -313,6 +301,75 @@ function deltaCell(
   }
 }
 
+/**
+ * The headline. Two pass rates side by side are descriptive; only a paired
+ * delta with a confidence interval supports a claim, so this sits above the
+ * descriptive tables and states the verdict in words.
+ */
+export function ArmStatsCard({ manifest }: { manifest: RunManifest }) {
+  const stats = manifest.armStats ?? []
+  if (!stats.length) return null
+  const fmt = (x: number) => (Number.isFinite(x) ? (x >= 0 ? "+" : "") + x.toFixed(3) : "n/a")
+  const tone = (v: string) =>
+    v === "variant better"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : v === "baseline better"
+        ? "text-destructive"
+        : "text-muted-foreground"
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Does the context provider help?</CardTitle>
+        <CardDescription>
+          Paired against the same model&apos;s baseline, matched case-for-case and epoch-for-epoch.
+          The interval is a 95% bootstrap CI on the mean score delta; the p-value is an exact
+          McNemar test on the pass/fail pairs.{" "}
+          <strong>An interval spanning zero is a null result</strong>, whatever the point estimate
+          says.
+          {manifest.epochs != null && manifest.epochs < 2 && (
+            <span className="mt-1 block text-amber-700 dark:text-amber-400">
+              This run used {manifest.epochs} epoch — a single draw per cell cannot separate a real
+              effect from sampling noise. Re-run with more epochs before trusting any verdict here.
+            </span>
+          )}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="min-w-[14rem]">Arm</TableHead>
+              <TableHead className="text-right">n</TableHead>
+              <TableHead className="text-right">Pass base → arm</TableHead>
+              <TableHead className="text-right">Δ score [95% CI]</TableHead>
+              <TableHead className="text-right">p</TableHead>
+              <TableHead>Verdict</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {stats.map((a: ArmComparison) => (
+              <TableRow key={a.variantTarget}>
+                <TableCell className="font-mono text-xs">{a.variantTarget}</TableCell>
+                <TableCell className="text-right tabular-nums">{a.n}</TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {(a.passRateBaseline * 100).toFixed(0)}% → {(a.passRateVariant * 100).toFixed(0)}%
+                </TableCell>
+                <TableCell className="text-right tabular-nums font-mono text-xs">
+                  {fmt(a.meanDelta)} [{fmt(a.ci95[0])}, {fmt(a.ci95[1])}]
+                </TableCell>
+                <TableCell className="text-right tabular-nums font-mono text-xs">
+                  {a.pValue.toFixed(3)}
+                </TableCell>
+                <TableCell className={`text-xs ${tone(a.verdict)}`}>{a.verdict}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
   const pairs = pairsByProvider(rows)
   if (!pairs.length) return null
@@ -321,11 +378,10 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
       <CardHeader>
         <CardTitle>Context-provider delta</CardTitle>
         <CardDescription>
-          One row per <span className="font-mono">(agent, model, provider)</span> — value is{" "}
-          <code className="text-xs">+&lt;provider&gt;</code> minus the baseline for the same
-          agent + model. Green = the provider moved the metric in the desired direction; red = it
-          moved against it. Rows are only shown when both the baseline and the composed variant
-          ran in this run.
+          One row per <span className="font-mono">(model, provider)</span> — value is{" "}
+          <code className="text-xs">+&lt;provider&gt;</code> minus the baseline for the{" "}
+          <em>same model</em>. Green = the provider moved the metric in the desired direction;
+          red = it moved against it. Rows appear only when both arms of that model ran here.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -333,9 +389,8 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-[6rem]">Agent</TableHead>
-                <TableHead className="min-w-[10rem]">Model</TableHead>
-                <TableHead className="min-w-[5rem]">Provider</TableHead>
+                <TableHead className="min-w-[12rem]">Model</TableHead>
+                <TableHead className="min-w-[5rem]">Arm</TableHead>
                 {COLUMNS.map((c) => (
                   <TableHead key={c.key} className="text-right font-medium">
                     Δ {c.label}
@@ -344,18 +399,10 @@ export function ProviderDeltaMatrix({ rows }: { rows: MatrixRow[] }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {pairs.map((p, i) => {
-                const isNewAgent = i > 0 && pairs[i - 1].agent !== p.agent
+              {pairs.map((p) => {
                 return (
-                  <TableRow
-                    key={`${p.agent}@${p.model ?? ""}+${p.providerId}`}
-                    className={isNewAgent ? "border-t-2" : undefined}
-                  >
-                    <TableCell className="font-mono text-xs">{p.agent}</TableCell>
-                    <TableCell
-                      className="font-mono text-xs text-muted-foreground"
-                      title={p.model ?? "adapter default"}
-                    >
+                  <TableRow key={`${p.model}+${p.providerId}`}>
+                    <TableCell className="font-mono text-xs" title={p.model}>
                       {shortModel(p.model)}
                     </TableCell>
                     <TableCell className="font-mono text-xs">+{p.providerId}</TableCell>

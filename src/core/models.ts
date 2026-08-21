@@ -1,0 +1,175 @@
+/**
+ * The model catalog — the single source of truth for what this harness can run.
+ *
+ * A **target** is a model id optionally composed with a context provider:
+ *
+ *     anthropic/claude-opus-4-7          baseline
+ *     anthropic/claude-opus-4-7+cg       same model, Context Graph context prepended
+ *
+ * The A/B is always the same model on both sides; only the context differs.
+ * See `src/core/target.ts` for the grammar and `src/core/runner.ts` for how a
+ * target is executed.
+ *
+ * Adding a model here immediately makes it selectable in `/new`, callable from
+ * `pnpm eval --models=…`, and priced by `estimateCostUsd`.
+ */
+
+/** Which vendor's API ultimately serves the model. Drives both direct-provider
+ * routing (see `providers.ts`) and which env var makes it runnable. */
+export type ModelFamily = "anthropic" | "openai" | "google"
+
+export type ModelSpec = {
+  /** Gateway-style id, always `<family>/<name>`. */
+  id: string
+  displayName: string
+  family: ModelFamily
+  /**
+   * USD per million tokens. Omitted where the published rate isn't known — the
+   * model still runs, but its cost estimates read $0.00. `unpricedModels()`
+   * lists them so the UI can say so rather than implying the run was free.
+   */
+  rates?: { input: number; output: number }
+  /**
+   * Dated snapshot to call instead of the alias.
+   *
+   * `anthropic/claude-opus-4-7` is a moving pointer: the weights behind it can
+   * change between two runs, which silently breaks comparability the same way
+   * an unpinned repo ref does. Setting this pins the model the way `sha` pins
+   * the repo.
+   *
+   * Left unset here rather than guessed — a wrong snapshot id fails the call
+   * outright. Fill from the vendor's docs. Until then the runner records the
+   * model id the provider actually served (`meta.servedModel`) so a run is at
+   * least auditable after the fact.
+   */
+  snapshot?: string
+}
+
+// Catalog carried over from APIFlow-Bench-benchmarks#12 (src/evals/models.ts),
+// which tracks the current generation. Note from that file, still true here:
+// gpt-5-codex / gpt-5.1-codex* / gpt-5-chat-latest are deprecated by OpenAI;
+// gpt-5.3-codex is the current codex generation.
+export const MODELS: ModelSpec[] = [
+  {
+    id: "anthropic/claude-sonnet-4-5",
+    displayName: "Claude Sonnet 4.5",
+    family: "anthropic",
+    rates: { input: 3, output: 15 },
+  },
+  {
+    id: "anthropic/claude-opus-4-7",
+    displayName: "Claude Opus 4.7",
+    family: "anthropic",
+    rates: { input: 15, output: 75 },
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    displayName: "Claude Haiku 4.5",
+    family: "anthropic",
+    rates: { input: 1, output: 5 },
+  },
+  { id: "openai/gpt-5.6-sol", displayName: "GPT-5.6 Sol", family: "openai" },
+  { id: "openai/gpt-5.5", displayName: "GPT-5.5", family: "openai" },
+  { id: "openai/gpt-5.4", displayName: "GPT-5.4", family: "openai" },
+  { id: "openai/gpt-5.3-codex", displayName: "GPT-5.3 Codex", family: "openai" },
+  {
+    id: "openai/gpt-5",
+    displayName: "GPT-5",
+    family: "openai",
+    rates: { input: 5, output: 20 },
+  },
+  {
+    id: "openai/gpt-5-mini",
+    displayName: "GPT-5 mini",
+    family: "openai",
+    rates: { input: 0.5, output: 2 },
+  },
+  { id: "openai/gpt-4.1", displayName: "GPT-4.1", family: "openai" },
+  {
+    id: "openai/gpt-4o",
+    displayName: "GPT-4o",
+    family: "openai",
+    rates: { input: 2.5, output: 10 },
+  },
+  {
+    id: "openai/gpt-4o-mini",
+    displayName: "GPT-4o mini",
+    family: "openai",
+    rates: { input: 0.15, output: 0.6 },
+  },
+  {
+    id: "google/gemini-2.5-pro",
+    displayName: "Gemini 2.5 Pro",
+    family: "google",
+    rates: { input: 3.5, output: 10.5 },
+  },
+  {
+    id: "google/gemini-2.5-flash",
+    displayName: "Gemini 2.5 Flash",
+    family: "google",
+    rates: { input: 0.3, output: 2.5 },
+  },
+]
+
+const BY_ID = new Map(MODELS.map((m) => [m.id, m]))
+
+export function listModels(): ModelSpec[] {
+  return MODELS
+}
+
+export function getModelSpec(id: string): ModelSpec | undefined {
+  return BY_ID.get(id)
+}
+
+/** Infer the family for a model id that isn't in the catalog — the runner still
+ * accepts uncatalogued ids (they route through the gateway and cost $0.00 in
+ * the estimate), so a new release is runnable before anyone edits this file. */
+export function familyOf(id: string): ModelFamily | null {
+  const known = BY_ID.get(id)
+  if (known) return known.family
+  const slash = id.indexOf("/")
+  const prefix = slash > 0 ? id.slice(0, slash) : ""
+  if (prefix === "anthropic" || prefix === "openai" || prefix === "google") return prefix
+  return null
+}
+
+/**
+ * Env vars that would make this model runnable. Direct-provider keys are listed
+ * first because `getModel` prefers them; the gateway key is the universal
+ * fallback.
+ */
+export function envCandidatesFor(id: string): string[] {
+  switch (familyOf(id)) {
+    case "anthropic":
+      return ["CLAUDE_API_KEY", "AI_GATEWAY_API_KEY"]
+    case "openai":
+      return ["CODEX_API_KEY", "AI_GATEWAY_API_KEY"]
+    case "google":
+      return ["AI_GATEWAY_API_KEY"]
+    default:
+      return ["AI_GATEWAY_API_KEY"]
+  }
+}
+
+/** True when at least one of the model's candidate env vars is set. */
+export function isModelConfigured(id: string): boolean {
+  return envCandidatesFor(id).some((v) => Boolean(process.env[v]))
+}
+
+/** Catalog entries with no published rate — their cost estimates read $0.00. */
+export function unpricedModels(): string[] {
+  return MODELS.filter((m) => !m.rates).map((m) => m.id)
+}
+
+/** Entries still calling a floating alias rather than a dated snapshot. */
+export function unpinnedModels(): string[] {
+  return MODELS.filter((m) => !m.snapshot).map((m) => m.id)
+}
+
+/**
+ * The id to actually call: the dated snapshot when pinned, else the alias.
+ * Uncatalogued ids pass through unchanged.
+ */
+export function resolveModelId(id: string): string {
+  return getModelSpec(id)?.snapshot ?? id
+}

@@ -15,10 +15,10 @@ on:
       model:
         description: "New model identifier (e.g. anthropic/claude-5-opus)"
         required: true
-      adapter:
-        description: "Which slot to update: claude | codex | devin | cursor | raw"
+      catalogOnly:
+        description: "Add to the model catalog but do not enroll in the A/B"
         required: false
-        default: "raw"
+        default: "false"
       releaseUrl:
         description: "Vendor release / model-card URL (recorded on the run)"
         required: false
@@ -50,7 +50,7 @@ jobs:
       SKILL_WEBHOOK_URL:        ${{ secrets.SKILL_WEBHOOK_URL }}
       SKILL_WEBHOOK_TOKEN:      ${{ secrets.SKILL_WEBHOOK_TOKEN }}
       SKILL_TRIGGER_MODEL:      ${{ github.event.inputs.model || github.event.client_payload.model }}
-      SKILL_TRIGGER_ADAPTER:    ${{ github.event.inputs.adapter || github.event.client_payload.adapter }}
+      SKILL_TRIGGER_CATALOG_ONLY: ${{ github.event.inputs.catalogOnly || github.event.client_payload.catalogOnly }}
       SKILL_TRIGGER_RELEASE_URL: ${{ github.event.inputs.releaseUrl || github.event.client_payload.releaseUrl }}
       SKILL_TRIGGER_DISPATCHED_BY: ${{ github.event.inputs.dispatchedBy || github.event.client_payload.dispatchedBy || github.event.action }}
       GH_TOKEN:                 ${{ secrets.GITHUB_TOKEN }}
@@ -70,15 +70,15 @@ jobs:
 
       - name: Apply model update
         run: |
-          node scripts/apply-model-update.mjs \
-            --model="$SKILL_TRIGGER_MODEL" \
-            --adapter="${SKILL_TRIGGER_ADAPTER:-raw}"
+          EXTRA=""
+          if [ "${SKILL_TRIGGER_CATALOG_ONLY:-false}" = "true" ]; then EXTRA="--catalog-only"; fi
+          node scripts/apply-model-update.mjs --model="$SKILL_TRIGGER_MODEL" $EXTRA
 
       - name: Type-check
         run: pnpm build
 
-      - name: Run agent-benchmark
-        run: pnpm eval agent-benchmark
+      - name: Run model-benchmark
+        run: pnpm eval model-benchmark
 
       - name: Upload run artifacts
         if: always()
@@ -90,15 +90,15 @@ jobs:
             results/skill-input.json
           retention-days: 30
 
-      - name: Commit adapter change on success
+      - name: Commit catalog change on success
         if: success()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain src/core/agents/ src/evals/agent-benchmark.ts)" ]; then
-            git add src/core/agents/ src/evals/agent-benchmark.ts
-            git commit -m "eval: ${SKILL_TRIGGER_MODEL} on agent-benchmark [skip ci]"
+          if [ -n "$(git status --porcelain src/core/models.ts src/evals/model-benchmark.ts)" ]; then
+            git add src/core/models.ts src/evals/model-benchmark.ts
+            git commit -m "eval: ${SKILL_TRIGGER_MODEL} on model-benchmark [skip ci]"
             git push
           else
-            echo "No adapter change to commit."
+            echo "No catalog change to commit."
           fi

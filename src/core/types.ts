@@ -1,5 +1,6 @@
 import type { ModelMessage, ToolSet, LanguageModelUsage, StepResult } from "ai"
 import type { ZodType } from "zod"
+import type { Workspace } from "./workspace"
 
 export type ModelId = string
 
@@ -65,6 +66,13 @@ export type ScorerContext = {
   output: EvalOutput
   judgeModel?: ModelId
   judgeRubric?: JudgeRubric
+  /**
+   * Read-only checkout the cell ran against, at the fixture's pinned SHA.
+   * Present whenever the case has `context.repoUrl`; absent only if the
+   * clone failed. Repo-fact scorers verify citations against this, so they
+   * grade the same bytes the model's tools could see.
+   */
+  workspace?: Workspace
 }
 
 export type Scorer = {
@@ -114,11 +122,18 @@ export type GroundTruthCheck =
       description?: string
     }
   | {
+      /**
+       * Escape hatch for checks that need the repo. `ws` is the pinned
+       * checkout — present unless the clone failed, so guard before using it.
+       * This is how a prompt asserts facts (a route really exists, a spec file
+       * is really out of sync) rather than asserting the answer's shape.
+       */
       type: "custom"
       name: string
       check: (
         output: EvalOutput,
         ec: EvalCase,
+        ws?: Workspace,
       ) => Promise<CheckResult> | CheckResult
     }
 
@@ -137,7 +152,7 @@ export type EvalOutput = {
   steps: StepResult<ToolSet>[]
   finishReason: string
   usage: LanguageModelUsage
-  /** Free-form adapter metadata (e.g. session URL for Devin, contextGraph stats for +cg). */
+  /** Free-form metadata: resolved model, context-provider stats on +cg arms. */
   meta?: Record<string, unknown>
 }
 
@@ -152,11 +167,25 @@ export type EvalSuite = {
   /**
    * Category-specific rubric override. Runner resolves in this order:
    * case.judgeRubric → rubricsByCategory[case.metadata.category] → suite.judgeRubric.
-   * Category is read from case.metadata.category (see agent-benchmark for build/find/ask).
+   * Category is read from case.metadata.category (see model-benchmark for build/find/ask).
    */
   rubricsByCategory?: Record<string, JudgeRubric>
   maxSteps?: number
   system?: string
+  /**
+   * Sampling temperature, applied to every cell.
+   *
+   * Set explicitly, never left to the provider default: two arms sampled at
+   * different (unknown) temperatures are not comparable, and an unrecorded
+   * default makes a run unreproducible. 0 does not make an LLM deterministic,
+   * but it minimises the variance the epochs then measure.
+   */
+  temperature?: number
+  /**
+   * Times to run every (target, case). k=1 cannot separate a real effect from
+   * sampling noise; paired stats need repeated draws to estimate variance.
+   */
+  epochs?: number
 }
 
 /**
@@ -178,6 +207,9 @@ export type CaseDiagnostics = {
 export type CaseResult = {
   caseId: string
   model: ModelId
+  /** 0-indexed repeat of this (case, target). Paired stats match epoch to
+   * epoch so both arms are compared under the same draw. */
+  epoch?: number
   category?: string
   difficulty?: Difficulty
   capabilityAxis?: CapabilityAxis[]
@@ -202,6 +234,39 @@ export type RunManifest = {
   finishedAt?: string
   status: RunStatus
   error?: string
+  /** Cells executed in parallel by the runner's worker pool. */
+  concurrency?: number
+  /** Repeats per (target, case). */
+  epochs?: number
+  /** Sampling temperature every cell ran at. */
+  temperature?: number
+  /** Set when the run stopped early because `budgetUsd` was reached — the
+   * aggregate is over a partial matrix and must not be read as complete. */
+  budgetStopped?: boolean
+  budgetUsd?: number
+  totalCostUsd?: number
+  /**
+   * Cell outcome accounting.
+   *
+   * `status: "completed"` only means the runner finished its work list — it
+   * says nothing about whether any cell produced an answer. A run where every
+   * cell hit an exhausted quota used to report as a clean completion with an
+   * all-zero matrix, which reads as "the models did badly" rather than "nothing
+   * ran". These make the difference explicit.
+   */
+  cellsTotal?: number
+  cellsErrored?: number
+  /** The most common error, when any cell failed. */
+  dominantError?: { message: string; count: number }
+  /** Set when the run was cut short by an unrecoverable provider error
+   * (exhausted quota, bad credentials) rather than finishing its work list. */
+  abortedReason?: string
+  /** Model that actually judged — may differ from suite.judgeModel if that
+   * model was itself under test. */
+  judgeModel?: string
+  /** Warnings and counts from the judging phase, surfaced rather than logged
+   * only, so a run whose judge partly failed can't be read as fully scored. */
+  judgeNotes?: string[]
   models: ModelId[]
   caseCount: number
   scorers: string[]
@@ -219,4 +284,26 @@ export type RunManifest = {
       }
     >
   }
+  /**
+   * Paired arm-vs-baseline comparisons, one per (model, arm). This is the
+   * result — the per-model pass rates above are descriptive, but only a paired
+   * delta with a confidence interval supports a claim about the provider.
+   */
+  armStats?: ArmComparison[]
+}
+
+export type ArmComparison = {
+  model: string
+  /** The arm being tested, e.g. "cg". */
+  providerId: string
+  baselineTarget: string
+  variantTarget: string
+  n: number
+  meanDelta: number
+  ci95: [number, number]
+  pValue: number
+  passRateBaseline: number
+  passRateVariant: number
+  passRateDelta: number
+  verdict: string
 }

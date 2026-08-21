@@ -2,8 +2,49 @@ import { getBaseSuite, getSuite, listSuiteNames } from "@/evals"
 import { readOverrides } from "@/evals/overrides"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { PromptEditor } from "./prompt-editor"
+import type { EvalCase } from "@/core/types"
 
 export const dynamic = "force-dynamic"
+
+/**
+ * Projects a case into the editor's flat string form, then keys the editor on
+ * that projection. The editor holds the fields as local state so they stay
+ * editable; remounting on a server-side change is what resyncs it after a save
+ * or reset. `initial` is a fresh object every render, so a `key` built from the
+ * values (not the identity) is what makes the remount fire only when something
+ * actually changed.
+ */
+function PromptEditorForCase({
+  suiteName,
+  caseId,
+  merged,
+  hasOverride,
+}: {
+  suiteName: string
+  caseId: string
+  merged: EvalCase
+  hasOverride: boolean
+}) {
+  const initial = {
+    ticket: merged.ticket ?? "",
+    input: typeof merged.input === "string" ? merged.input : "",
+    inputIsString: typeof merged.input === "string",
+    difficulty: merged.difficulty ?? "",
+    capabilityAxis: (merged.capabilityAxis ?? []).join(", "),
+    contextRepoUrl: merged.context?.repoUrl ?? "",
+    contextRepoPath: merged.context?.repoPath ?? "",
+    contextText: merged.context?.text ?? "",
+  }
+  return (
+    <PromptEditor
+      key={JSON.stringify(initial)}
+      suiteName={suiteName}
+      caseId={caseId}
+      initial={initial}
+      hasOverride={hasOverride}
+    />
+  )
+}
 
 export default async function PromptsPage(props: PageProps<"/prompts">) {
   const search = await props.searchParams
@@ -95,19 +136,10 @@ export default async function PromptsPage(props: PageProps<"/prompts">) {
                 </div>
               </CardHeader>
               <CardContent>
-                <PromptEditor
+                <PromptEditorForCase
                   suiteName={suite.name}
                   caseId={c.id}
-                  initial={{
-                    ticket: merged.ticket ?? "",
-                    input: typeof merged.input === "string" ? merged.input : "",
-                    inputIsString: typeof merged.input === "string",
-                    difficulty: merged.difficulty ?? "",
-                    capabilityAxis: (merged.capabilityAxis ?? []).join(", "),
-                    contextRepoUrl: merged.context?.repoUrl ?? "",
-                    contextRepoPath: merged.context?.repoPath ?? "",
-                    contextText: merged.context?.text ?? "",
-                  }}
+                  merged={merged}
                   hasOverride={hasOverride}
                 />
               </CardContent>

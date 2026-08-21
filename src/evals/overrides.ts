@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs"
+import { promises as fs, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 import type { Difficulty, EvalCase, EvalSuite } from "@/core/types"
 
@@ -89,16 +89,15 @@ let cache: { mtimeMs: number; data: OverridesFile } | null = null
  * calls within the same request are cheap.
  */
 export function readOverridesSyncCached(): OverridesFile {
-  const fsSync = require("node:fs") as typeof import("node:fs")
   let mtimeMs: number
   try {
-    mtimeMs = fsSync.statSync(OVERRIDES_PATH).mtimeMs
+    mtimeMs = statSync(OVERRIDES_PATH).mtimeMs
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return {}
     throw err
   }
   if (cache && cache.mtimeMs === mtimeMs) return cache.data
-  const raw = fsSync.readFileSync(OVERRIDES_PATH, "utf8")
+  const raw = readFileSync(OVERRIDES_PATH, "utf8")
   const data = raw.trim() ? (JSON.parse(raw) as OverridesFile) : {}
   cache = { mtimeMs, data }
   return data

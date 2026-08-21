@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-// Applies a model bump to the harness in one of two ways:
-//   1. --adapter=<claude|codex|devin|cursor> — replaces the MODEL constant
-//      in src/core/agents/<adapter>.ts with the given --model value.
-//   2. --adapter=raw (default) — appends the --model value to the models
-//      list in src/evals/agent-benchmark.ts as a new raw-model target.
+// Registers a newly-released model with the harness so the next eval run
+// includes it. Two edits, both idempotent:
+//
+//   1. src/core/models.ts        — append a MODELS catalog entry (unpriced;
+//                                  rates get filled in by hand once published).
+//   2. src/evals/model-benchmark.ts — append the id to AB_MODELS, which
+//                                  expands to `<id>` and `<id>+cg`.
+//
+// Pass --catalog-only to do (1) without enrolling the model in the A/B.
 //
 // Called from .github/workflows/on-model-release.yml.
 
@@ -13,61 +17,70 @@ import path from "node:path"
 const args = new Map()
 for (const raw of process.argv.slice(2)) {
   const eq = raw.indexOf("=")
-  if (raw.startsWith("--") && eq > 0) {
-    args.set(raw.slice(2, eq), raw.slice(eq + 1))
-  }
+  if (raw.startsWith("--") && eq > 0) args.set(raw.slice(2, eq), raw.slice(eq + 1))
+  else if (raw.startsWith("--")) args.set(raw.slice(2), "true")
 }
 
 const model = args.get("model")
-const adapter = args.get("adapter") ?? "raw"
+const catalogOnly = args.get("catalog-only") === "true"
 if (!model) {
-  console.error("usage: apply-model-update.mjs --model=<id> [--adapter=<claude|codex|devin|cursor|raw>]")
+  console.error("usage: apply-model-update.mjs --model=<family/name> [--catalog-only]")
   process.exit(2)
 }
 
-const ADAPTERS = new Set(["claude", "codex", "devin", "cursor"])
-
-async function updateAdapter(name, newModel) {
-  const file = path.resolve(process.cwd(), `src/core/agents/${name}.ts`)
-  const src = await fs.readFile(file, "utf8")
-  const re = /const\s+MODEL\s*=\s*(["'`])([^"'`]+)\1/m
-  const m = src.match(re)
-  if (!m) throw new Error(`Could not find MODEL constant in ${file}`)
-  const prev = m[2]
-  if (prev === newModel) {
-    console.log(`[apply] ${name}: MODEL already at ${newModel}`)
-    return { file, prev, next: newModel, changed: false }
-  }
-  const next = src.replace(re, `const MODEL = ${m[1]}${newModel}${m[1]}`)
-  await fs.writeFile(file, next)
-  console.log(`[apply] ${name}: ${prev} → ${newModel}`)
-  return { file, prev, next: newModel, changed: true }
-}
-
-async function appendRawTarget(newModel) {
-  const file = path.resolve(process.cwd(), "src/evals/agent-benchmark.ts")
-  const src = await fs.readFile(file, "utf8")
-  if (src.includes(`"${newModel}"`) || src.includes(`'${newModel}'`)) {
-    console.log(`[apply] raw target ${newModel} already present`)
-    return { file, added: false }
-  }
-  // Insert before the closing bracket of the models array literal.
-  const re = /(models:\s*\[[\s\S]*?)(\n\s*\],)/m
-  const m = src.match(re)
-  if (!m) throw new Error(`Could not find models array in ${file}`)
-  const next = src.replace(re, (_full, head, tail) => `${head},\n    "${newModel}"${tail}`)
-  await fs.writeFile(file, next)
-  console.log(`[apply] appended raw target: ${newModel}`)
-  return { file, added: true }
-}
-
-if (ADAPTERS.has(adapter)) {
-  const res = await updateAdapter(adapter, model)
-  console.log(JSON.stringify({ kind: "adapter", adapter, ...res }))
-} else if (adapter === "raw") {
-  const res = await appendRawTarget(model)
-  console.log(JSON.stringify({ kind: "raw", model, ...res }))
-} else {
-  console.error(`Unknown adapter: ${adapter}. Must be one of ${[...ADAPTERS, "raw"].join(", ")}.`)
+const FAMILIES = new Set(["anthropic", "openai", "google"])
+const family = model.includes("/") ? model.slice(0, model.indexOf("/")) : ""
+if (!FAMILIES.has(family)) {
+  console.error(
+    `[apply] '${model}' must be prefixed with a known family: ${[...FAMILIES].join(" | ")}`,
+  )
   process.exit(2)
 }
+
+/** Human label from an id: "anthropic/claude-5-opus" → "Claude 5 Opus". */
+function displayNameFor(id) {
+  return id
+    .slice(id.indexOf("/") + 1)
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((w) => (/^\d/.test(w) ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(" ")
+}
+
+async function addToCatalog(id) {
+  const file = path.resolve(process.cwd(), "src/core/models.ts")
+  const src = await fs.readFile(file, "utf8")
+  if (src.includes(`id: "${id}"`)) {
+    console.log(`[apply] catalog: ${id} already present`)
+    return { file, changed: false }
+  }
+  // Insert before the closing bracket of the MODELS array literal.
+  const re = /(export const MODELS: ModelSpec\[\] = \[[\s\S]*?)(\n\])/m
+  if (!re.test(src)) throw new Error(`Could not find MODELS array in ${file}`)
+  const entry = `\n  { id: ${JSON.stringify(id)}, displayName: ${JSON.stringify(
+    displayNameFor(id),
+  )}, family: ${JSON.stringify(family)} },`
+  const next = src.replace(re, (_m, head, tail) => `${head}${entry}${tail}`)
+  await fs.writeFile(file, next)
+  console.log(`[apply] catalog: added ${id} (unpriced — add rates when published)`)
+  return { file, changed: true }
+}
+
+async function enrollInAb(id) {
+  const file = path.resolve(process.cwd(), "src/evals/model-benchmark.ts")
+  const src = await fs.readFile(file, "utf8")
+  if (src.includes(`"${id}"`)) {
+    console.log(`[apply] A/B: ${id} already enrolled`)
+    return { file, changed: false }
+  }
+  const re = /(const AB_MODELS = \[[\s\S]*?)(\n\] as const)/m
+  if (!re.test(src)) throw new Error(`Could not find AB_MODELS array in ${file}`)
+  const next = src.replace(re, (_m, head, tail) => `${head}\n  ${JSON.stringify(id)},${tail}`)
+  await fs.writeFile(file, next)
+  console.log(`[apply] A/B: enrolled ${id} (runs as ${id} and ${id}+cg)`)
+  return { file, changed: true }
+}
+
+const catalog = await addToCatalog(model)
+const ab = catalogOnly ? { changed: false, skipped: true } : await enrollInAb(model)
+console.log(JSON.stringify({ model, family, catalog, ab }))

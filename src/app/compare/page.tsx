@@ -3,7 +3,14 @@ import { listRuns, readCases, readManifest } from "@/core/artifacts"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { CompareChart } from "./compare-chart"
-import { buildMatrixRows, MetricsMatrix, ProviderDeltaMatrix } from "./metrics-matrix"
+import {
+  ArmStatsCard,
+  buildMatrixRows,
+  MetricsMatrix,
+  ProviderDeltaMatrix,
+} from "./metrics-matrix"
+import { ValueMapCard } from "./value-map-card"
+import { getSuite } from "@/evals"
 import type { CaseResult } from "@/core/types"
 
 export const dynamic = "force-dynamic"
@@ -55,6 +62,13 @@ export default async function ComparePage(props: PageProps<"/compare">) {
     p95: Math.round(v.p95LatencyMs),
   }))
 
+  // Buckets live on the suite definition, not on persisted results, so an old
+  // run re-read after a suite edit shows the current tagging. That is the right
+  // trade: the bucket is an interpretation of the task, not data about the run.
+  const suite = getSuite(manifest.suite)
+  const bucketOf: Record<string, string | undefined> = {}
+  for (const c of suite?.cases ?? []) bucketOf[c.id] = c.metadata?.bucket as string | undefined
+
   const disagreements = findDisagreements(cases, manifest.models)
 
   return (
@@ -78,6 +92,9 @@ export default async function ComparePage(props: PageProps<"/compare">) {
         </div>
       </div>
 
+      <ArmStatsCard manifest={manifest} />
+
+      <ValueMapCard manifest={manifest} cases={cases} bucketOf={bucketOf} />
       <MetricsMatrix rows={buildMatrixRows(manifest, cases)} />
 
       <ProviderDeltaMatrix rows={buildMatrixRows(manifest, cases)} />

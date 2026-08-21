@@ -1,6 +1,6 @@
 "use client"
 
-import { useActionState, useEffect, useState } from "react"
+import { useActionState, useState } from "react"
 import { editPromptAction, resetPromptAction, type EditPromptFormState } from "@/app/actions/edit-prompt"
 import { Button } from "@/components/ui/button"
 
@@ -43,23 +43,9 @@ export function PromptEditor({
     {},
   )
 
-  useEffect(() => {
-    setTicket(initial.ticket)
-    setInput(initial.input)
-    setDifficulty(initial.difficulty)
-    setCapabilityAxis(initial.capabilityAxis)
-    setContextRepoUrl(initial.contextRepoUrl)
-    setContextRepoPath(initial.contextRepoPath)
-    setContextText(initial.contextText)
-  }, [
-    initial.ticket,
-    initial.input,
-    initial.difficulty,
-    initial.capabilityAxis,
-    initial.contextRepoUrl,
-    initial.contextRepoPath,
-    initial.contextText,
-  ])
+  // No prop→state resync effect here: the parent keys this component on the
+  // serialized `initial`, so a server-side change (save / reset) remounts it
+  // and useState re-seeds from the new props.
 
   const dirty =
     ticket !== initial.ticket ||

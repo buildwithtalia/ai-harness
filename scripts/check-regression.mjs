@@ -115,7 +115,7 @@ async function main() {
     ...perModelLines,
     "",
     "## Investigate",
-    "- Download the workflow's `agent-benchmark-<run-id>` artifact and inspect `cases.jsonl` for the failing cases.",
+    "- Download the workflow's `model-benchmark-<run-id>` artifact and inspect `cases.jsonl` for the failing cases.",
     "- Confirm whether an adapter, model, or Context Graph change caused this — or whether the LLM judge produced a noisy verdict.",
     "- If the regression is intentional (new prompt, adapter change, new default model), close this issue and revert `results/nightly-baseline.json` to the current run so tomorrow's diff is against a valid baseline.",
   ].join("\n")

@@ -2,6 +2,21 @@ export type ContextQuery = {
   prompt: string
   repoUrl?: string
   repoPath?: string
+  /** Pinned commit the cell is running against — scopes retrieval to the same
+   * bytes the model's tools and the repo-fact scorers see. */
+  sha?: string
+}
+
+/** What a provider needs indexed before it can answer for a repo. */
+export type IngestSpec = {
+  repoUrl: string
+  sha: string
+}
+
+export type IngestResult = {
+  /** False when the provider reports the repo is not usable for queries. */
+  ready: boolean
+  detail?: string
 }
 
 export type ContextDocument = {
@@ -18,13 +33,22 @@ export type ContextResult = {
 }
 
 export type ContextProvider = {
-  /** Short slug used in composed target ids (e.g. "cg" → `claude+cg`). */
+  /** Short slug used in composed target ids (e.g. "cg" → `openai/gpt-5+cg`). */
   id: string
   displayName: string
   requiredEnv: string[]
   isConfigured(): boolean
   query(q: ContextQuery): Promise<ContextResult>
   formatAsContext(result: ContextResult): string
+  /**
+   * Index a repo at a pinned SHA before any query for it.
+   *
+   * Optional: providers serving a pre-indexed corpus omit it. When present the
+   * runner calls it once per (repoUrl, sha) per process and caches the promise,
+   * so a full run triggers at most one ingest per fixture rather than one
+   * per cell.
+   */
+  ingest?(spec: IngestSpec): Promise<IngestResult>
 }
 
 export function defaultFormatAsContext(

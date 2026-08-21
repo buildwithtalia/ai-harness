@@ -15,8 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      # Smoke run only exercises the AI-Gateway-backed adapters (claude, codex)
-      # to keep PR cost low and avoid paid Devin/Cursor credits on every push.
+      # Smoke run exercises one cheap model in both arms — enough to prove the
+      # A/B wiring end-to-end without a meaningful bill.
       AI_GATEWAY_API_KEY:      ${{ secrets.AI_GATEWAY_API_KEY }}
       POSTMAN_CONTEXT_GRAPH_API_URL: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_URL }}
       POSTMAN_CONTEXT_GRAPH_API_KEY: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_KEY }}
@@ -31,8 +31,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - name: Smoke run — 2 cases × claude vs claude+cg
-        run: pnpm eval agent-benchmark --limit=2 --models=claude,claude+cg
+      - name: Smoke run — 2 cases × haiku baseline vs +cg
+        run: |
+          pnpm eval model-benchmark --limit=2 \
+            --models=anthropic/claude-haiku-4-5,anthropic/claude-haiku-4-5+cg
 
       - name: Upload smoke artifacts
         if: always()
