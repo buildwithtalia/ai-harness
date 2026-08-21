@@ -415,7 +415,7 @@ async function runOne(
   // `no-workspace` rather than scoring the model down for our infra problem.
   const workspace = await resolveWorkspace(ec)
 
-  // On a `+<provider>` target the provider is queried once, before the model
+  // On a `+<provider>` target the provider API is called once, before the model
   // runs, and its output is prepended to the prompt. Everything else about the
   // two arms is identical — that is what makes the delta attributable.
   let providerText: string | null = null

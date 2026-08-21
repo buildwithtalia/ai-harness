@@ -227,8 +227,8 @@ const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
 // Arms each model is run under. Both see the same repo tools and the same
 // prompt; they differ only in whether the Context Graph was consulted:
 //   baseline  — repo tools only
-//   +cg       — one Context Graph query, prefilled into the prompt before the
-//               model runs
+//   +cg       — one call to the Context Graph API, its response prefilled into
+//               the prompt before the model runs
 // Dropping an arm here halves the run.
 const ARMS = ["", "+cg"] as const
 
@@ -297,7 +297,7 @@ const estateCases: EvalCase[] = listEstates().map((estate) => {
 const suite: EvalSuite = {
   name: "model-benchmark",
   description:
-    "Measure what the Context Graph adds. Every model runs each prompt twice — once plain, once with Context Graph context prepended — so the only variable is the context. Every model gets read-only repo tools (read_file, list_dir, grep, glob, git_log, git_blame) over a checkout pinned to an exact commit, and runs each prompt twice: baseline, and +cg with one Context Graph query prefilled into the prompt. The 12 base prompts are realistic engineering tickets, each fanned across four production repos: healthcare-infra (-hc), grafana/grafana (-gr), getsentry/sentry (-sn), mattermost/mattermost (-mm). Answers are graded against the pinned commit \u2014 cited files and line numbers must actually exist.",
+    "Measure what the Context Graph adds. Every model runs each prompt twice — once plain, once with Context Graph context prepended — so the only variable is the context. Every model gets read-only repo tools (read_file, list_dir, grep, glob, git_log, git_blame) over a checkout pinned to an exact commit, and runs each prompt twice: baseline, and +cg with the response from one Context Graph API call prefilled into the prompt. The 12 base prompts are realistic engineering tickets, each fanned across four production repos: healthcare-infra (-hc), grafana/grafana (-gr), getsentry/sentry (-sn), mattermost/mattermost (-mm). Answers are graded against the pinned commit \u2014 cited files and line numbers must actually exist.",
   system:
     "You are a senior software engineer. Read the ticket. Ground every proposal in the referenced repo — cite file paths, endpoints, and function names. Enumerate assumptions, dependencies, and risks explicitly. If you cannot access the repo directly, say what you would inspect and why. Use numbered steps. Never invent files that could not plausibly exist in the repo.",
   models: AB_MODELS.flatMap((m) => ARMS.map((arm) => `${m}${arm}`)),

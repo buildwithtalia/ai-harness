@@ -1,9 +1,11 @@
 # ai-harness
 
-An eval harness for measuring **what a context provider adds to a model** on realistic engineering tasks. Every run is a matrix over two axes:
+An eval harness for measuring **what the Context Graph adds to a model** on realistic engineering tasks.
+
+It compares **models, not agents** — the same model run twice, with and without the graph. Every run is a matrix over two axes:
 
 - **Models** — LLMs from the catalog in `src/core/models.ts` (Anthropic, OpenAI, Google), reached either through a direct provider key or the Vercel AI Gateway.
-- **Arms** — `baseline` (repo tools only) vs `+cg` (the same, plus one Context Graph query prefilled into the prompt before the model runs)
+- **Arms** — `baseline` (repo tools only) vs `+cg` (the same, plus the context returned by one call to the Context Graph **API**, prefilled into the prompt before the model runs)
 
 **Both arms get real tool access to a real checkout.** Each fixture repo is cloned at a pinned commit and exposed through `read_file`, `list_dir`, `grep`, `glob`, `git_log` and `git_blame`; the model works in a tool-calling loop until it has what it needs. Nothing is simulated and nothing is described-in-the-abstract.
 
@@ -41,11 +43,13 @@ Every output is graded by three scorers: **per-prompt deterministic ground truth
 
 One question: **does the Context Graph make a model better at real engineering work?**
 
-Every model runs each prompt twice — once with repo tools alone, once with the same tools plus a Context Graph query prefilled into the prompt. Same model, same prompt, same tools, same scorers; the only variable is whether the graph was consulted. The `/compare` page reads the two arms against each other.
+Every model runs each prompt twice — once with repo tools alone, once with the same tools plus context retrieved from the Context Graph API and prefilled into the prompt. Same model, same prompt, same tools, same scorers; the only variable is whether the API was called. The `/compare` page reads the two arms against each other.
 
-There is no agent layer. Targets are models, not frameworks — but every model gets a genuine tool loop over a real repo, so "model" here means an agent you assembled, not a single completion.
+**This harness does not compare agents.** There is no agent layer, no adapters, and no coding frameworks — no Claude Code, Codex, Cursor or Devin. A target is a *model*, and the thing being compared is the same model with and without the Context Graph. The two axes are orthogonal on purpose: the model axis tells you which model to pick, the arm axis tells you what the graph is worth, and mixing a framework into either would confound both.
 
-The graph is **prefill, not a tool**: queried once by the harness before the model runs, forced into the prompt, not something the model can re-query or decline. That makes the delta cleanly attributable to the retrieved context, since nothing else about the two arms differs.
+Every model does run a genuine tool-calling loop over a real checkout, so a cell is more than a single completion — but the loop is the harness's, identical for every target, and is deliberately not a variable.
+
+The Context Graph is an **API the harness calls, not a tool the model calls**. The harness makes one request to it before the model starts, and puts the response at the top of the prompt. The model cannot call it again, call it differently, or decline it. That is what makes the delta attributable to the retrieved context rather than to how well a given model happens to drive a retrieval tool — an important distinction, since a model that never calls a tool would otherwise look like a model the graph does not help.
 
 ### Target-id grammar
 
@@ -102,7 +106,7 @@ That is a lot to run at once, so scoping is the normal case: `--repos=` / the re
 
 ## How a run executes
 
-A run is a flat `target × case` work list drained by a bounded worker pool, with per-cell error containment. Each cell is one adapter call plus scoring. Runner in `src/core/runner.ts`.
+A run is a flat `target × case` work list drained by a bounded worker pool, with per-cell error containment. Each cell is one model call — a tool-calling loop — plus scoring. Runner in `src/core/runner.ts`.
 
 ### Lifecycle
 
@@ -115,7 +119,7 @@ A run is a flat `target × case` work list drained by a bounded worker pool, wit
    - Time the call with `performance.now()`; capture `usage` (input/output tokens) and pass it to `estimateCostUsd(target, usage)` for a dollar figure. `latencyMs` on a `+provider` arm *includes* the provider lookup — the provider portion is broken out into `diagnostics.providerLatencyMs`.
    - Run every scorer. Rubric resolution order: `case.judgeRubric` → `suite.rubricsByCategory[case.metadata.category]` → `suite.judgeRubric`.
    - Aggregate: `aggregateScore = mean(scores.filter(s => s !== null))`. `passed = aggregateScore >= 0.5`.
-   - Append the `CaseResult` as one JSONL line to `runs/<id>/cases.jsonl`, drop the live snapshot, emit `case-done` (or `case-error` if the adapter threw — the errored case is still appended with `error.message` and 0 scores).
+   - Append the `CaseResult` as one JSONL line to `runs/<id>/cases.jsonl`, drop the live snapshot, emit `case-done` (or `case-error` if the model call threw — the errored case is still appended with `error.message` and 0 scores).
 3. Compute per-model aggregates, rewrite `manifest.json` with `status: "completed"` and `finishedAt`, then call `notifySkill(manifest, cases)` (`src/core/skill-hook.ts`). If anything throws at the pool level, the runner writes `status: "errored"` + `error` and re-throws (skill hook is skipped on error). Either way a `finally` stops the heartbeat and clears `runs/<id>/live/`.
 
 ### Parallelism
@@ -124,7 +128,7 @@ Cells are independent, so they run concurrently. `concurrency` defaults to `DEFA
 
 Workers pull from a shared cursor rather than taking a fixed slice, so one slow cell (a long reasoning call, or a sluggish provider lookup) doesn't idle the rest of the pool. Wall clock is roughly `ceil(cells / concurrency) × mean cell time`.
 
-Pick the number against your rate limits, not your core count — each cell is an adapter call plus judge calls, so 12 parallel cells can mean 24+ concurrent API requests. Drop to 1 for a strictly sequential run.
+Pick the number against your rate limits, not your core count — each cell is a tool-calling loop plus judge calls, so 12 parallel cells can mean far more than 12 concurrent API requests. Drop to 1 for a strictly sequential run.
 
 Two consequences of going parallel:
 
@@ -148,7 +152,7 @@ The check is on the read path (not a background sweeper) because runs are only e
 
 Three levels, in increasing scope:
 
-1. **Per case** — an adapter throw doesn't fail the run. The case row records `error.message` and `error.stack`, `aggregateScore = 0`, `passed = false`. The loop continues.
+1. **Per case** — a failed model call doesn't fail the run. The case row records `error.message` and `error.stack`, `aggregateScore = 0`, `passed = false`. The loop continues.
 2. **Per scorer** — a scorer throw is *not* caught today (would crash the case). The realistic failure modes here are the judge model 429ing or a Zod parse of a `structured-output` check failing — the latter is a check failure, not a scorer throw, so it's already handled.
 3. **Per run** — a top-level throw (e.g. filesystem write failure) marks the manifest `errored` and re-throws so the CLI exits non-zero and the server action logs it.
 
@@ -319,7 +323,7 @@ Two sizes because scale is the axis the report found the effect on: its no-graph
 **Two design decisions carry the whole case:**
 
 1. **The registry repo is excluded.** `healthcare-infra/registry.yaml` lists every `http_deps` edge in the org in one file. An estate containing it turns the task into "grep one YAML" and both arms score ~100% — the comparison measures nothing. With it out, the only evidence that X calls the target lives in **X's own repo**, so the answer has to be reconstructed across repos. That is precisely the shape the report describes as the graph's advantage.
-2. **Non-callers are included as distractors.** Without them, an agent that lists every repo name scores perfect recall. The report tracks precision because the graph invented zero services while file-search "hallucinates service names at scale"; distractors are what make that measurable. Verified: a shotgun answer naming all 13 `hcs` members scores recall 1.00, precision 0.50 (6 false positives) and so fails the 0.70 precision gate. Distractors carry their own alias map, because a model names repositories (`healthcare-vitals`) at least as often as services (`vitals-service`).
+2. **Non-callers are included as distractors.** Without them, a model that lists every repo name scores perfect recall. The report tracks precision because the graph invented zero services while file-search "hallucinates service names at scale"; distractors are what make that measurable. Verified: a shotgun answer naming all 13 `hcs` members scores recall 1.00, precision 0.50 (6 false positives) and so fails the 0.70 precision gate. Distractors carry their own alias map, because a model names repositories (`healthcare-vitals`) at least as often as services (`vitals-service`).
 
 Answer keys are **generated, not hand-curated** — `pnpm tsx scripts/derive-answer-keys.mts` reads the registry at a pinned SHA and writes `src/evals/answer-keys.ts`. The report hand-curated its ground truth; deriving it gets the same thing without a curator silently missing an edge.
 
@@ -354,6 +358,17 @@ Add `preferred_language` to the User API end-to-end. Include the migration, vali
 ```
 
 Effect: the model reads the case as a realistic dev ticket, not a clean prompt. This is directly borrowed from APIFlow-Bench's failure-first framing.
+
+**Is the ticket required?** No. `ticket` is optional on `EvalCase` — leave it blank and the runner sends `input` alone, with no placeholder and no penalty. All 50 cases currently carry one because it changes the answers in ways worth having:
+
+- **It supplies the failing symptom**, which is what a real engineer starts from. Without it a prompt like *"add `preferred_language` to the User API"* is a spec; with it, the model has to work out what is broken first.
+- **It keeps the two arms honest.** The ticket is part of the prompt, so it is byte-identical across `baseline` and `+cg`. Anything you put there is given to both arms equally and cannot skew the delta.
+- **It is where realistic ambiguity lives.** Error strings, partial stack traces, and a reporter who describes the symptom rather than the cause are what separate a model that investigates from one that pattern-matches the ask.
+
+Two cautions when editing it in `/prompts`:
+
+- **Don't leak the answer.** Naming the file, symbol, or service that the ground truth checks for turns the case into a reading-comprehension test — both arms then score near-perfect and the comparison measures nothing. This is why the old `must-mention` checks were removed: their needles came from the ticket text.
+- **Don't put repo-specific facts in it.** Each base prompt runs against all four fixtures, so a ticket that mentions a Grafana path is wrong on three of them.
 
 ## Statistics
 
@@ -430,7 +445,7 @@ Plus one executable check rather than a tool: on the five `build` prompts the mo
 
 Design notes worth knowing:
 
-- **Read-only is load-bearing, not a limitation.** It's what lets every cell shares one immutable checkout per repo instead of copying a 1.9 GB tree per cell (APIFlow-Bench copies per trial because its agents can mutate). It also means a thousand-plus unattended cells never execute model-authored commands. Adding a write or shell tool means bringing back per-cell copies and real sandboxing.
+- **Read-only is load-bearing, not a limitation.** It's what lets every cell share one immutable checkout per repo instead of copying a 1.9 GB tree per cell (APIFlow-Bench copies per trial because its agents can mutate). It also means a thousand-plus unattended cells never execute model-authored commands. Adding a write or shell tool means bringing back per-cell copies and real sandboxing.
 - **Tool errors return, they don't throw.** A thrown tool error aborts the whole generation. A model that greps a bad path should get a message and retry — and recovering from a bad path is itself behaviour worth grading.
 - **Paths are confined to the repo.** The model chooses these strings, so `../../.ssh/id_rsa`, absolute paths, and symlinks pointing out of the tree are all reachable inputs. `resolveInside()` resolves the real path and re-checks containment.
 - **`maxSteps` defaults to 40.** A real trace on a large repo is dozens of greps and reads; cutting short would understate a model that was making progress.
@@ -776,13 +791,13 @@ Everything a run produced, gitignored (regenerated per invocation). Two files pl
   "finishedAt": "2026-08-18T14:41:07.219Z",
   "status": "completed",
   "concurrency": 4,
-  "models": ["claude", "claude+cg", "claude@anthropic/claude-sonnet-4-5", "codex+cg", ...],
-  "caseCount": 12,
+  "models": ["anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7+cg", "openai/gpt-5", "openai/gpt-5+cg", ...],
+  "caseCount": 50,
   "scorers": ["deterministic", "llmJudge"],
   "aggregate": {
     "perModel": {
-      "claude": { "meanScore": 0.71, "passRate": 0.83, "totalCostUsd": 0.42, "p50LatencyMs": 2118, "p95LatencyMs": 5904, "totalInputTokens": …, "totalOutputTokens": … },
-      "claude+cg": { … }
+      "anthropic/claude-opus-4-7": { "meanScore": 0.71, "passRate": 0.83, "totalCostUsd": 0.42, "p50LatencyMs": 2118, "p95LatencyMs": 5904, "totalInputTokens": …, "totalOutputTokens": … },
+      "anthropic/claude-opus-4-7+cg": { … }
     }
   }
 }
@@ -847,17 +862,17 @@ Git-tracked; committed selectively.
 
 This harness is the benchmark backend for the release-autopilot skill in [Postman-Devrel/devrel-claude-code-skills PR #3](https://github.com/Postman-Devrel/devrel-claude-code-skills/pull/3) (`model-context-graph-comparison`).
 
-> Every time a new AI model or coding framework ships, we want a data-backed post out the door within an hour: **"Postman's context graph makes `<model>` X% better at APIs, Y% cheaper per task, Z% more autonomous."** The skill runs the ai-harness, produces the visuals, posts to social, and regenerates the harness config to use the new model as its default.
+> Every time a new AI model ships, we want a data-backed post out the door within an hour: **"Postman's context graph makes `<model>` X% better at APIs, Y% cheaper per task, Z% more autonomous."** The skill runs the ai-harness, produces the visuals, posts to social, and regenerates the harness config to use the new model as its default.
 
 ### Who owns what
 
 | Stage | Owner | How it lands in this repo |
 |---|---|---|
-| 1. **Detect** a new model / framework release | Skill (hourly cron over a watchlist of vendor blogs, GitHub releases, HuggingFace trending) | — |
+| 1. **Detect** a new model release | Skill (hourly cron over a watchlist of vendor blogs, GitHub releases, HuggingFace trending) | — |
 | 2. **Run the ai-harness** against the new model | Skill triggers → harness runs | `workflow_dispatch` or `repository_dispatch` on `.github/workflows/on-model-release.yml`; harness runs `model-benchmark` across every registered target |
 | 3. **Produce the visuals** for the study | Skill — reads `results/skill-input.json` or the webhook payload and generates the charts | Harness emits raw numbers; chart rendering is the skill's job |
 | 4. **Post to social** (X / LinkedIn / blog / Discord) | Skill — using its own credential set | — |
-| 5. **Regenerate the harness config** so the new model becomes the default | Harness | `on-model-release.yml` commits the `MODEL` constant bump in the relevant adapter back to `main` with `[skip ci]` |
+| 5. **Regenerate the harness config** so the new model is enrolled | Harness | `on-model-release.yml` runs `scripts/apply-model-update.mjs`, which adds the model to the catalog in `src/core/models.ts` and enrols it in the A/B list, then commits back to `main` with `[skip ci]` |
 
 ### Skill → harness
 
@@ -876,7 +891,7 @@ The skill triggers `.github/workflows/on-model-release.yml`, either as `workflow
 gh api repos/buildwithtalia/ai-harness/dispatches \
   -f event_type=new-model-release \
   -F 'client_payload[model]=anthropic/claude-5-opus' \
-  -F 'client_payload[adapter]=claude' \
+  -F 'client_payload[catalogOnly]=false' \
   -F 'client_payload[releaseUrl]=https://www.anthropic.com/news/claude-5-opus' \
   -F 'client_payload[dispatchedBy]=skill:model-context-graph-comparison'
 ```
@@ -910,7 +925,7 @@ Payload shape:
   ],
   "triggerContext": {
     "modelId": "anthropic/claude-5-opus",
-    "adapterChanged": "claude",
+    "catalogOnly": "false",
     "releaseUrl": "…",
     "workflowRunUrl": "https://github.com/.../actions/runs/1234",
     "dispatchedBy": "skill:model-context-graph-comparison"
@@ -919,7 +934,7 @@ Payload shape:
 }
 ```
 
-Trigger context is filled in from env vars set by `on-model-release.yml` (`SKILL_TRIGGER_MODEL`, `SKILL_TRIGGER_ADAPTER`, `SKILL_TRIGGER_RELEASE_URL`, `SKILL_TRIGGER_DISPATCHED_BY`) plus the standard `GITHUB_*` action env for the workflow-run URL.
+Trigger context is filled in from env vars set by `on-model-release.yml` (`SKILL_TRIGGER_MODEL`, `SKILL_TRIGGER_CATALOG_ONLY`, `SKILL_TRIGGER_RELEASE_URL`, `SKILL_TRIGGER_DISPATCHED_BY`) plus the standard `GITHUB_*` action env for the workflow-run URL. There is no adapter field — targets are models.
 
 ### Tagline field mapping
 
@@ -938,7 +953,7 @@ Four GitHub Actions workflows live under `.github/workflows/`.
 | `ci.yml` | every `pull_request` + push to `main` | `tsc --noEmit`, `pnpm lint`, and `pnpm eval:list` (catches a suite that throws at module load). No API keys, no cost. |
 | `eval-nightly.yml` | `schedule: 0 7 * * *` (07:00 UTC) + `workflow_dispatch` | Runs `pnpm eval model-benchmark`, uploads `runs/<id>/` as a 30-day artifact, runs `scripts/check-regression.mjs` (opens `regression`-labelled issue if mean pass rate drops >5 pp vs `results/nightly-baseline.json`), commits the updated baseline back to `main` with `[skip ci]`. |
 | `pr-eval-smoke.yml` | `pull_request` on `src/evals/**` | Runs the first 2 cases against `anthropic/claude-haiku-4-5` in both arms — enough to prove the A/B wiring end-to-end on the cheapest model. Artifacts retained 7 days. |
-| `on-model-release.yml` | `workflow_dispatch` + `repository_dispatch: new-model-release` | Release-autopilot skill entrypoint. Applies model update, runs eval, uploads artifacts, commits adapter bump. Details above. |
+| `on-model-release.yml` | `workflow_dispatch` + `repository_dispatch: new-model-release` | Release-autopilot skill entrypoint. Applies the model update, runs the eval, uploads artifacts, commits the catalog change. Details above. |
 
 ## Environment variables and secrets
 
@@ -1049,7 +1064,7 @@ Everything below is scaffolded but stubbed / provisional. The wiring is in place
 - **Finalize prompts** — 12 base prompts fan across four fixture repos (48 cases) and 1 cross-repo prompt across two estates (2 cases). Waiting on final prompt wording and any additional cases. More repos slot in via `FIXTURES` in `src/evals/fixtures.ts`; each one adds 12 cases. More cross-repo prompts are the highest-value addition — it is the only bucket the report found the graph helps with.
 - **Tier-2 ground truth** — coverage is 12/12, but all of it is *generic* repo grounding plus prompt-declared contracts. Closed-form expected answers per (prompt, repo) — "the five highest-dependency endpoints in Mattermost are X" — would be sharper still. That's 48 hand-authored sets and they go stale as the pinned SHAs advance, so it's worth doing only for prompts with a genuinely stable answer.
 - **Model rates** — several catalog entries are `unpriced` (`gpt-5.6-sol`, `gpt-5.5`, `gpt-5.4`, `gpt-5.3-codex`, `gpt-4.1`). They run fine but report $0.00; add `rates` to `src/core/models.ts` once the published pricing is confirmed.
-- **Context provider APIs** — `cg` (Postman Context Graph) is a stub. It reads `POSTMAN_CONTEXT_GRAPH_API_URL` + `POSTMAN_CONTEXT_GRAPH_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on the real endpoint URL, auth scheme, request/response contract. Once known, only `context-graph.ts` changes — composed adapters, `/new`, runner, dashboard, diagnostics, delta matrix all already work.
+- **Context provider APIs** — `cg` (Postman Context Graph) is a stub. It reads `POSTMAN_CONTEXT_GRAPH_API_URL` + `POSTMAN_CONTEXT_GRAPH_API_KEY`, POSTs `{ prompt, repoUrl, repoPath }`, expects `{ summary, documents[] }`. Waiting on the real endpoint URL, auth scheme, request/response contract. Once known, only `context-graph.ts` changes — the `+cg` target grammar, `/new`, runner, dashboard, diagnostics and delta matrix all already work.
 - **Adopt more of APIFlow-Bench** — provenance-gated grading, bootstrap 90% CIs on pass rate, golden replay + bank-content SHA in `registry.json`, chain-1-to-k prefix cases, deterministic local mocks per `build` case. The most valuable single addition is provenance-gated grading — grading on task-unique canary-derived values a model can only produce by driving the fixture backend.
 
 Adding a second provider is one file + one line in `src/core/context-providers/index.ts`; the `/new` form, target parser, delta matrix, and skill payload pick it up automatically — each provider becomes another arm column alongside `+cg`.

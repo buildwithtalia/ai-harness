@@ -585,7 +585,7 @@ export function NewRunForm({
         />
         <p className="text-xs text-muted-foreground">
           Cells run at once (1–{MAX_CONCURRENCY}, default {DEFAULT_CONCURRENCY}). Each cell is a
-          separate agent process plus judge calls — raise for wall-clock, lower if you hit
+          tool-calling loop against the model, plus judge calls — raise for wall-clock, lower if you hit
           provider rate limits.
         </p>
       </div>
