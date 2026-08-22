@@ -1,15 +1,15 @@
 {
-  "runId": "2026-08-21T07-17-56-901Z__agent-benchmark",
-  "finishedAt": "2026-08-21T07:17:56.953Z",
+  "runId": "2026-08-22T07-13-36-706Z__model-benchmark",
+  "finishedAt": "2026-08-22T07:14:08.730Z",
   "meanPassRate": 0,
   "perModelPassRate": {
-    "claude": 0,
-    "claude+cg": 0,
-    "devin": 0,
-    "devin+cg": 0,
-    "cursor": 0,
-    "cursor+cg": 0,
-    "codex": 0,
-    "codex+cg": 0
+    "anthropic/claude-opus-4-7": 0,
+    "anthropic/claude-opus-4-7+cg": 0,
+    "anthropic/claude-sonnet-4-5": 0,
+    "anthropic/claude-sonnet-4-5+cg": 0,
+    "openai/gpt-5": 0,
+    "openai/gpt-5+cg": 0,
+    "google/gemini-2.5-pro": 0,
+    "google/gemini-2.5-pro+cg": 0
   }
 }
