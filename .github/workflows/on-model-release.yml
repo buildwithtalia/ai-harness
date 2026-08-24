@@ -42,9 +42,17 @@ jobs:
     timeout-minutes: 120
     env:
       AI_GATEWAY_API_KEY:       ${{ secrets.AI_GATEWAY_API_KEY }}
-      DEVIN_API_KEY:            ${{ secrets.DEVIN_API_KEY }}
-      CURSOR_API_KEY:           ${{ secrets.CURSOR_API_KEY }}
-      CURSOR_REPOSITORY:        ${{ secrets.CURSOR_REPOSITORY }}
+      # Direct provider keys — the harness prefers these and only falls back to
+      # the gateway when one is unset (see src/core/providers.ts).
+      CLAUDE_API_KEY:       ${{ secrets.CLAUDE_API_KEY }}
+      CODEX_API_KEY:       ${{ secrets.CODEX_API_KEY }}
+      GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
+      # Optional: real per-account rate limits. Unset falls back to the
+      # conservative lowest-tier defaults, which throttle hard.
+      ANTHROPIC_RPM:       ${{ vars.ANTHROPIC_RPM }}
+      ANTHROPIC_TPM:       ${{ vars.ANTHROPIC_TPM }}
+      OPENAI_RPM:       ${{ vars.OPENAI_RPM }}
+      OPENAI_TPM:       ${{ vars.OPENAI_TPM }}
       POSTMAN_CONTEXT_GRAPH_API_URL: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_URL }}
       POSTMAN_CONTEXT_GRAPH_API_KEY: ${{ secrets.POSTMAN_CONTEXT_GRAPH_API_KEY }}
       SKILL_WEBHOOK_URL:        ${{ secrets.SKILL_WEBHOOK_URL }}
