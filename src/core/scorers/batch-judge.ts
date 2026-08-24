@@ -29,10 +29,30 @@ import type { CaseResult, EvalCase, JudgeRubric } from "../types"
  * harness must not have.
  */
 
+/**
+ * The judge is told, explicitly, that it cannot see the repository.
+ *
+ * It never could — the call is `generateObject` with a prompt and no tools —
+ * but nothing said so, and the ASK rubric went as far as asking it whether
+ * claims were "true against the referenced repo". It answered, because models
+ * do. What it was actually scoring was plausibility, reported as accuracy, and
+ * that flowed into a third of the aggregate.
+ *
+ * Factual verification is the code scorers' job: they resolve every cited path
+ * against the pinned commit and check set answers against a generated key. The
+ * judge's job is the part code cannot see — reasoning, coverage, prioritisation,
+ * whether an engineer could act on it. Saying so stops it guessing at facts and
+ * keeps the two kinds of signal from being confused for one another.
+ */
 const SYSTEM =
   "You are a strict senior engineer grading submissions from an AI coding assistant. " +
-  "You care about evidence, correctness, and whether an engineer could act on the answer. " +
-  "You are consistent: the same submission gets the same score every time."
+  "You are consistent: the same submission gets the same score every time.\n\n" +
+  "IMPORTANT: you do NOT have access to the repository and cannot open any file. " +
+  "Whether a cited path exists, and whether a factual claim is true, is verified " +
+  "separately by code and is NOT your job. Do not guess at it and do not reward or " +
+  "penalise a submission for facts you cannot check. Judge only what is visible in " +
+  "the answer itself: is the reasoning sound, is it specific rather than hand-wavy, " +
+  "is the coverage complete, is the ordering sensible, could an engineer act on it."
 
 export type BatchJudgement = {
   /** Index into the submissions array as presented. */

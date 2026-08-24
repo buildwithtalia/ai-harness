@@ -41,12 +41,17 @@ const FIND_RUBRIC = {
   ],
   scale: [1, 5] as [number, number],
   instructions:
-    "root_cause_depth: does the agent trace to a plausible root cause, not stop at a symptom? dependency_coverage: are all downstream services, jobs, dashboards, and frontends enumerated? evidence_grounding: does the answer reference specific files, endpoints, tables, or logs — or is it hand-wavy? impact_prioritization: are the highest-blast-radius items ranked first? remediation_clarity: is the fix / rollback path unambiguous? Score integers 1-5 per dimension.",
+    "root_cause_depth: does the agent trace to a plausible root cause, not stop at a symptom? dependency_coverage: are all downstream services, jobs, dashboards, and frontends enumerated? evidence_grounding: does the answer reference specific files, endpoints, tables, or logs — or is it hand-wavy? Judge specificity only; whether those references resolve is checked by code, not by you. impact_prioritization: are the highest-blast-radius items ranked first? remediation_clarity: is the fix / rollback path unambiguous? Score integers 1-5 per dimension.",
 }
 
+// `accuracy` used to lead this rubric, worded as "are the specific claims true
+// against the referenced repo?". The judge has no repo access, so it was
+// scoring plausibility and reporting it as truth. Renamed to what it can
+// actually assess — whether claims are specific enough to be checkable — with
+// the checking itself left to the code scorers that can open the files.
 const ASK_RUBRIC = {
   dimensions: [
-    "accuracy",
+    "claim_specificity",
     "evidence_citation",
     "completeness",
     "prioritization",
@@ -54,7 +59,7 @@ const ASK_RUBRIC = {
   ],
   scale: [1, 5] as [number, number],
   instructions:
-    "accuracy: are the specific claims (endpoint counts, drift locations, vulnerable routes) true against the referenced repo? evidence_citation: is each claim tied to a file path / endpoint / doc quote? completeness: does the answer cover the full surface (all endpoints, all OWASP categories) or only the easy hits? prioritization: are the highest-signal findings surfaced first? actionability: could a maintainer act on this without further investigation? Score integers 1-5 per dimension.",
+    "claim_specificity: are the claims concrete and falsifiable (named endpoints, named files, counts with a stated method) rather than vague? Do NOT judge whether they are true — you cannot see the repo and that is checked separately. evidence_citation: is each claim tied to a file path / endpoint / doc quote at all? completeness: does the answer cover the full surface (all endpoints, all OWASP categories) or only the easy hits? prioritization: are the highest-signal findings surfaced first? actionability: could a maintainer act on this without further investigation? Score integers 1-5 per dimension.",
 }
 
 // ─── Base prompts (12) ────────────────────────────────────────────────────
@@ -388,6 +393,27 @@ const suite: EvalSuite = {
   // anonymised (see core/scorers/batch-judge.ts). A per-cell judge cannot
   // control cross-call drift and cannot hide which arm it is looking at.
   scorers: [deterministic(), repoGrounding({ minCitations: 3 })],
+
+  /**
+   * Weights, because an unweighted mean of these three is not a sensible
+   * number.
+   *
+   * `deterministic` is the only scorer that can carry a real answer key, so it
+   * leads. `repoGrounding` runs the same citation extractor over the same text
+   * and largely re-asks deterministic's own citation checks — halving it stops
+   * one signal being counted twice, which is what let a single parser bug move
+   * two thirds of a score at once. `llmJudge` is the only judgement in the set
+   * and cannot open the repo, so it informs the total without being able to
+   * decide it.
+   *
+   * Renormalised over whatever actually scored, so a skipped judge or a case
+   * with no ground truth does not change what the remaining numbers mean.
+   */
+  scorerWeights: {
+    deterministic: 0.5,
+    repoGrounding: 0.2,
+    llmJudge: 0.3,
+  },
 
   // Explicit, not the provider default: two arms sampled at different unknown
   // temperatures are not comparable. 0 does not make an LLM deterministic, but

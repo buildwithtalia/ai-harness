@@ -559,12 +559,7 @@ async function runOne(
       workspace,
     })
   }
-  const scoreValues = Object.values(scores)
-    .map((s) => s.score)
-    .filter((s): s is number => s != null)
-  const aggregateScore = scoreValues.length
-    ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length
-    : 0
+  const aggregateScore = weightedAggregate(scores, suite.scorerWeights)
   const passed = aggregateScore >= 0.5
 
   const diagnostics: CaseResult["diagnostics"] = {
@@ -603,13 +598,10 @@ function emptyAggregate() {
   }
 }
 
-/** Mean of the non-null scorer values; `null` scorers are not applicable and
- * must not drag an aggregate down. */
-function recomputeAggregate(r: CaseResult): void {
-  const values = Object.values(r.scores)
-    .map((s) => s.score)
-    .filter((v): v is number => v != null)
-  r.aggregateScore = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0
+/** Re-aggregate after the judge lands. `null` scorers are not applicable and
+ * must not drag the total down, so weights renormalise over what scored. */
+function recomputeAggregate(r: CaseResult, weights: Record<string, number> | undefined): void {
+  r.aggregateScore = weightedAggregate(r.scores, weights)
   r.passed = r.aggregateScore >= 0.5
 }
 
@@ -664,7 +656,7 @@ async function judgePhase(
         const s = scores.get(r.model)
         if (s) {
           r.scores["llmJudge"] = s
-          recomputeAggregate(r)
+          recomputeAggregate(r, suite.scorerWeights)
         }
       }
       judged++
@@ -720,6 +712,30 @@ function buildArmStats(models: ModelId[], all: CaseResult[]): ArmComparison[] {
  * first and abandoned two read as "1 of 1 cells failed" — a complete tiny run
  * rather than a run cut short with most of it never attempted.
  */
+/**
+ * Combine per-scorer results into one number, weighted and renormalised.
+ *
+ * Renormalising over the scorers that actually produced a value is the point:
+ * if the judge is skipped, the remaining weights still sum to 1, so a cell with
+ * no judge is comparable to one with a judge rather than being scored out of a
+ * smaller total.
+ */
+export function weightedAggregate(
+  scores: Record<string, ScoreResult>,
+  weights: Record<string, number> | undefined,
+): number {
+  let num = 0
+  let den = 0
+  for (const [name, s] of Object.entries(scores)) {
+    if (s.score == null) continue
+    const w = weights?.[name] ?? 1
+    if (w <= 0) continue
+    num += s.score * w
+    den += w
+  }
+  return den ? num / den : 0
+}
+
 function errorSummary(
   all: CaseResult[],
   planned: number,

@@ -160,6 +160,20 @@ export type EvalSuite = {
   models: ModelId[]
   cases: EvalCase[]
   scorers: Scorer[]
+  /**
+   * Relative weight per scorer name when combining into `aggregateScore`.
+   *
+   * Unweighted meaning was wrong in a specific way: `deterministic` and
+   * `repoGrounding` both derive from the same citation extractor and both ask
+   * whether cited files resolve, so citation validity was effectively counted
+   * twice while the judge — which cannot open the repo — carried a full third.
+   * A single parser bug duly moved two thirds of the score at once.
+   *
+   * Weights are renormalised over whichever scorers actually returned a number,
+   * so a skipped judge or a case with no ground truth reweights the rest rather
+   * than silently changing what the total means. Unlisted scorers default to 1.
+   */
+  scorerWeights?: Record<string, number>
   judgeModel?: ModelId
   judgeRubric?: JudgeRubric
   /**

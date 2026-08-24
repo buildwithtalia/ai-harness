@@ -525,7 +525,11 @@ Three graders score every case. Two are code, one is a model — and the ratio i
 | 2 | `repoGrounding()` | **code** | Every `path/to/file.ext:line` in the answer, resolved against the pinned checkout | every case with a workspace | No |
 | 3 | `llmJudge()` | **model** | An LLM reading a category-specific rubric | every case, as a second phase | Partly — this is why it is one vote of three |
 
-`aggregateScore` is the mean of the non-null scores; `passed = aggregateScore >= 0.5`. A grader that doesn't apply returns `null` and leaves the denominator rather than scoring 0.
+`aggregateScore` is a **weighted** mean of the non-null scores — `deterministic` 0.5, `repoGrounding` 0.2, `llmJudge` 0.3 — and `passed = aggregateScore >= 0.5`. A grader that doesn't apply returns `null`, and the weights renormalise over whatever did score, so a skipped judge doesn't change what the remaining numbers mean.
+
+The weights are not decoration. An unweighted mean was wrong twice over: `repoGrounding` runs the same citation extractor over the same text as `deterministic`'s own citation checks, so citation validity was counted twice — one parser bug duly moved two-thirds of a score at once — while the judge, which cannot open the repo, carried a full third. Under the current weights the judge **cannot pass a cell on its own** (max 0.3 against a 0.5 line), which is the correct relationship between an opinion and a verified fact.
+
+> **The judge is told it cannot see the repo.** It never could — the call is `generateObject` with no tools — but nothing said so, and the ASK rubric asked it whether claims were "true against the referenced repo". It answered, because models do; what it scored was plausibility, reported as accuracy. The dimension is now `claim_specificity` (are the claims concrete and falsifiable?), and the system prompt states outright that factual verification belongs to the code scorers.
 
 **The LLM grader, specifically:**
 
