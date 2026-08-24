@@ -1,6 +1,6 @@
 import { extractCitations } from "@/core/scorers/repo-facts"
 import { scoreSetAnswer } from "@/core/scorers/set-answer"
-import { answerKeyFor } from "./answer-keys"
+import { answerKeyFor, TOP_DEPENDED_SERVICES } from "./answer-keys"
 import { gitApplyCheck, resolveInside } from "@/core/workspace"
 import { promises as fs } from "node:fs"
 import type { GroundTruthCheck } from "@/core/types"
@@ -252,3 +252,46 @@ export const PATHS = {
   spec: /\.(ya?ml|json|proto|graphql|gql)$/i,
   config: /(^|\/)(config|configs|conf)\/|\.(toml|ini|cfg|env|conf)$/i,
 } as const
+
+/**
+ * The answer names the genuinely most depended-on services.
+ *
+ * Real ground truth, exact from the org's declared registry: audit-log-service
+ * has 95 inbound edges, patients-service 37, and so on. Graded on recall
+ * because the prompt asks for a ranked set and a miss is the failure that
+ * matters.
+ *
+ * Service-level, not endpoint-level. The prompt asks for endpoints, but the
+ * registry declares none, and inferring which endpoint carries the traffic
+ * would mean the harness building the call graph that the system under test
+ * exists to provide. The prompt already permits "whatever proxy for caller is
+ * defensible for this repo", so naming the right services is the strongest
+ * claim this fixture can actually check — and the check says so rather than
+ * implying endpoint precision it does not have.
+ */
+export function namesTopDependedServices(minRecall = 0.6): GroundTruthCheck {
+  const expected = TOP_DEPENDED_SERVICES.map((t) => t.service)
+  return {
+    type: "custom",
+    name: `names ≥${Math.round(minRecall * 100)}% of the 5 most depended-on services`,
+    check: async (output) => {
+      const score = scoreSetAnswer(output.text, {
+        expected,
+        aliases: Object.fromEntries(
+          expected.map((e) => [e, [e.replace(/-service$/, ""), `healthcare-${e.replace(/-service$/, "")}`]]),
+        ),
+      })
+      return {
+        pass: score.recall >= minRecall,
+        details: {
+          recall: score.recall,
+          found: score.found,
+          missed: score.missed,
+          expected: TOP_DEPENDED_SERVICES,
+          minRecall,
+          unit: "services (the registry declares no endpoints)",
+        },
+      }
+    },
+  }
+}

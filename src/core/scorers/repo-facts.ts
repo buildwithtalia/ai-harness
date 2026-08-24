@@ -59,6 +59,34 @@ const NOISE = [
   /^\.{1,2}$/,
 ]
 
+/**
+ * Does this token actually look like a repo path?
+ *
+ * The regex alone accepts any `word/word`, which swept up ordinary prose:
+ * `React/Redux`, `iOS/Android`, `JSON/UTF-8`, `OAuth 2.0/PKCE`, even `50/50`
+ * were all extracted as file paths, found not to exist, and charged to the
+ * model as hallucinated citations. In the harness's first real run that
+ * decided two of three deterministic checks and one of three grounding checks
+ * — the model was marked down for writing "Web Client (React/Redux)", which
+ * was never a citation at all.
+ *
+ * The bias was directional, not random: the more prose a model wrote, the
+ * worse it scored, regardless of whether it had read the repo.
+ *
+ * A token now qualifies only if it either carries a known code extension, or
+ * is an all-lowercase slash path (`server/channels/api4`). Uppercase segments
+ * without an extension are prose. This errs toward dropping a real citation
+ * rather than inventing a fake one, which is the safer direction: an unparsed
+ * citation costs a little credit, while a phantom one is scored as dishonesty.
+ */
+const HAS_EXT = new RegExp(`\\.(?:${CODE_EXT})$`, "i")
+function looksLikePath(token: string): boolean {
+  if (HAS_EXT.test(token)) return true
+  if (!token.includes("/")) return false
+  if (/[A-Z]/.test(token)) return false // React/Redux, iOS/Android, JSON/UTF-8
+  return /[a-z]/.test(token) // reject 50/50 and other digit-only runs
+}
+
 export type Citation = { raw: string; filePath: string; line?: number }
 
 export function extractCitations(text: string): Citation[] {
@@ -66,6 +94,7 @@ export function extractCitations(text: string): Citation[] {
   for (const m of text.matchAll(PATH_RE)) {
     const raw = m[1]
     if (!raw || NOISE.some((re) => re.test(raw))) continue
+    if (!looksLikePath(raw.replace(/[.,;:)\]]+$/, ""))) continue
     // Strip trailing punctuation the regex may have caught inside a sentence.
     const filePath = raw.replace(/[.,;:)\]]+$/, "").replace(/^\.\//, "")
     if (!filePath || filePath.length > 300) continue

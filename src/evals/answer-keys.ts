@@ -671,3 +671,34 @@ export const ANSWER_KEYS: EstateAnswerKey[] = [
 export function answerKeyFor(estateId: string): EstateAnswerKey | undefined {
   return ANSWER_KEYS.find((k) => k.estateId === estateId)
 }
+
+/**
+ * Services with the most inbound declared dependencies, most first.
+ *
+ * Exact from the registry. Service-level, not endpoint-level — the registry
+ * declares no endpoints, so nothing finer is available without inferring a call
+ * graph, which is the job of the system under test rather than the harness.
+ */
+export const TOP_DEPENDED_SERVICES: Array<{ service: string; inbound: number }> =
+  [
+  {
+    "service": "audit-log-service",
+    "inbound": 95
+  },
+  {
+    "service": "patients-service",
+    "inbound": 37
+  },
+  {
+    "service": "providers-service",
+    "inbound": 22
+  },
+  {
+    "service": "ehr-service",
+    "inbound": 12
+  },
+  {
+    "service": "notifications-service",
+    "inbound": 12
+  }
+]

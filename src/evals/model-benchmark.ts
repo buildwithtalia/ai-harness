@@ -1,10 +1,15 @@
 import { deterministic } from "@/core/scorers/deterministic"
 import { FIXTURES, listEstates } from "./fixtures"
 import { answerKeyFor } from "./answer-keys"
-import { citesRealFiles, crossRepoCallers, fewInventedPaths } from "./checks"
+import {
+  citesRealFiles,
+  crossRepoCallers,
+  fewInventedPaths,
+  namesTopDependedServices,
+} from "./checks"
 import { repoGrounding } from "@/core/scorers/repo-grounding"
 import { GROUND_TRUTH_BY_SUBTASK, assertFullCoverage } from "./ground-truth"
-import type { EvalCase, EvalSuite } from "@/core/types"
+import type { EvalCase, EvalSuite, GroundTruthCheck } from "@/core/types"
 
 // Every base prompt is fanned across all four fixture repos (see
 // ./fixtures.ts), so the same ticket is asked of a small private-shaped app
@@ -234,10 +239,39 @@ const SURFACES = [
   })),
 ]
 
+/**
+ * Extra ground truth that only exists for a specific (prompt, surface) pair.
+ *
+ * Most prompts are graded identically everywhere, but a real answer key needs a
+ * declared source of truth, and only some surfaces have one. healthcare ships a
+ * service registry, so "which has the most dependencies" has an exact answer
+ * there; grafana, sentry and mattermost have nothing equivalent, and inventing
+ * a key for them would mean the harness inferring a call graph — the job of the
+ * system under test.
+ *
+ * Keyed `<subtask>@<surface>`. Anything not listed here is graded on citation
+ * validity and the judge alone, which `accuracyGraded` below makes explicit
+ * rather than leaving implied.
+ */
+const SURFACE_GROUND_TRUTH: Record<string, GroundTruthCheck[]> = {
+  "most-dependencies@healthcare": [namesTopDependedServices(0.6)],
+}
+
+/** True when the (prompt, surface) pair has a key that can be wrong. */
+function isAccuracyGraded(subtask: string, surface: string): boolean {
+  if (SURFACE_GROUND_TRUTH[`${subtask}@${surface}`]) return true
+  return subtask === "cross-repo-blast-radius"
+}
+
 const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
   SURFACES.map((f) => ({
     ...base,
-    groundTruth: GROUND_TRUTH_BY_SUBTASK[String(base.metadata?.subtask)],
+    groundTruth: {
+      checks: [
+        ...(GROUND_TRUTH_BY_SUBTASK[String(base.metadata?.subtask)]?.checks ?? []),
+        ...(SURFACE_GROUND_TRUTH[`${String(base.metadata?.subtask)}@${f.label}`] ?? []),
+      ],
+    },
     id: `${baseId}-${f.id}`,
     // `fixture` is what the `--repos=` filter matches on; `baseId` is what the
     // `--prompts=` filter matches on. Both are set here rather than re-derived
@@ -248,6 +282,10 @@ const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
       baseId,
       fixture: f.label,
       fixtureRef: f.ref,
+      // Whether this cell is graded against an answer that can be wrong, or
+      // only on citation validity plus the judge. Recorded per cell so a score
+      // is never read as an accuracy measurement when it isn't one.
+      accuracyGraded: isAccuracyGraded(String(base.metadata?.subtask), f.label),
       ...(f.estate ? { estate: f.estate } : {}),
     },
     context: f.context,
@@ -296,6 +334,9 @@ const estateCases: EvalCase[] = listEstates().map((estate) => {
       baseId: "xrepo-01-blast-radius",
       subtask: "cross-repo-blast-radius",
       bucket: "cross-repo-blast-radius",
+      // Graded against a generated key of 37 real callers — this and the
+      // healthcare most-dependencies cell are the only two that can be wrong.
+      accuracyGraded: true,
       estate: estate.id,
       fixture: estate.label,
       estateSize: estate.repos.length,

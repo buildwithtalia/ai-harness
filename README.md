@@ -488,6 +488,22 @@ If a clone fails the cell still runs — without tools, with `repoGrounding` rep
 
 ## Scoring
 
+### What is actually graded for accuracy
+
+**Only 2 of 49 cells are graded against an answer that can be wrong.** Every cell records `metadata.accuracyGraded`, because the distinction decides how a score may be read.
+
+| Cells | Graded on | Can the answer be wrong? |
+|---|---|---|
+| `ask-02-most-dependencies-hc` | Recall over the 5 genuinely most depended-on services, exact from `registry.yaml` | **Yes** |
+| `xrepo-01-blast-radius-hc` | Recall over 37 real callers, generated key | **Yes** |
+| the other 47 | Citation validity, format compliance, and the judge | No |
+
+For those 47 there is no list of correct answers anywhere in this repo. A model can answer the wrong thing, cite three real files while doing it, emit conforming JSON, and score well. That is a measurement of **citation hygiene and format compliance**, not of accuracy — and reporting it as accuracy would be false.
+
+The gap is not laziness, it is provenance. A real key needs a declared source of truth: healthcare ships a service registry, so "which has the most dependencies" has an exact answer. grafana, sentry and mattermost have nothing equivalent, and manufacturing one would mean the harness inferring a call graph — which is the job of the system under test, so grading against it would be marking the Context Graph's homework with the Context Graph.
+
+Note also that the healthcare key is **service-level, not endpoint-level**: the registry declares no endpoints. The prompt permits "whatever proxy for caller is defensible for this repo", and the check records `unit: "services"` rather than implying a precision it does not have.
+
 ### Who the graders are
 
 Three graders score every case. Two are code, one is a model — and the ratio is deliberate.
