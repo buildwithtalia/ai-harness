@@ -187,12 +187,34 @@ export function limitGroupFor(id: string): ModelSpec["limits"] | undefined {
   return BY_ID.get(id)?.limits
 }
 
+/**
+ * The OpenAI key, new name first.
+ *
+ * `CODEX_API_KEY` is the old name, from when targets were agents and this key
+ * belonged to a "Codex" adapter. The adapter is gone; the key is just OpenAI's.
+ * Both are read so an existing `.env.local` or CI secret keeps working, and the
+ * old name is reported as deprecated rather than silently honoured forever.
+ */
+export function openaiApiKey(): string | undefined {
+  const next = process.env.OPENAI_API_KEY?.trim()
+  if (next) return next
+  const legacy = process.env.CODEX_API_KEY?.trim()
+  if (legacy && !warnedLegacyOpenAiKey) {
+    warnedLegacyOpenAiKey = true
+    console.warn(
+      "[env] CODEX_API_KEY is deprecated — rename it to OPENAI_API_KEY. Still honoured for now.",
+    )
+  }
+  return legacy || undefined
+}
+let warnedLegacyOpenAiKey = false
+
 export function envCandidatesFor(id: string): string[] {
   switch (familyOf(id)) {
     case "anthropic":
       return ["CLAUDE_API_KEY", "AI_GATEWAY_API_KEY"]
     case "openai":
-      return ["CODEX_API_KEY", "AI_GATEWAY_API_KEY"]
+      return ["OPENAI_API_KEY", "CODEX_API_KEY", "AI_GATEWAY_API_KEY"]
     case "google":
       return ["GOOGLE_API_KEY", "AI_GATEWAY_API_KEY"]
     default:

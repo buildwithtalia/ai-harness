@@ -2,7 +2,7 @@ import { gateway, wrapLanguageModel, type LanguageModel } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { familyOf, resolveModelId } from "./models"
+import { familyOf, openaiApiKey, resolveModelId } from "./models"
 import type { ModelId } from "./types"
 import { limiterForModel } from "./rate-limit"
 
@@ -13,7 +13,7 @@ import { limiterForModel } from "./rate-limit"
  * AI Gateway:
  *
  *   anthropic/*  → CLAUDE_API_KEY (direct)  → AI_GATEWAY_API_KEY
- *   openai/*     → CODEX_API_KEY  (direct)  → AI_GATEWAY_API_KEY
+ *   openai/*     → OPENAI_API_KEY (direct)  → AI_GATEWAY_API_KEY
  *   everything else                          → AI_GATEWAY_API_KEY
  *
  * Direct is preferred because it gives feature parity with each vendor's own
@@ -41,7 +41,7 @@ export function resolveTransport(modelId: ModelId): ResolvedModel {
   if (family === "anthropic" && process.env.CLAUDE_API_KEY) {
     return { transport: "anthropic", name: bare }
   }
-  if (family === "openai" && process.env.CODEX_API_KEY) {
+  if (family === "openai" && openaiApiKey()) {
     return { transport: "openai", name: bare }
   }
   // Direct Google, same shape as the two above. Previously google/* could only
@@ -73,7 +73,7 @@ function rawModel(modelId: ModelId): Exclude<LanguageModel, string> {
     case "anthropic":
       return createAnthropic({ apiKey: process.env.CLAUDE_API_KEY! })(name)
     case "openai":
-      return createOpenAI({ apiKey: process.env.CODEX_API_KEY! })(name)
+      return createOpenAI({ apiKey: openaiApiKey()! })(name)
     case "google":
       return createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY! })(name)
     case "gateway":
