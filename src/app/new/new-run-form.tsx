@@ -151,9 +151,33 @@ export function NewRunForm({
     })
   }
 
+  /**
+   * One model at a time.
+   *
+   * Selecting any arm clears every other model's row, so a run is always a
+   * single model — but BOTH of that model's arms stay selectable, because
+   * baseline vs +cg on the same model is the comparison the harness exists to
+   * make. Restricting to one target would remove the A/B entirely.
+   *
+   * The cost argument is the same one: a cell of this suite has been measured
+   * at $4.28, so a four-model matrix is a four-figure run started by four
+   * clicks. Narrowing the default blast radius is worth more than the
+   * convenience of selecting everything.
+   */
+  function clearedExcept(modelId: string): Record<string, ArmState> {
+    return Object.fromEntries(
+      models.map((m) => [
+        m.id,
+        m.id === modelId
+          ? arms[m.id]
+          : { baseline: false, providers: new Set<string>() },
+      ]),
+    )
+  }
+
   function toggleBaseline(modelId: string) {
     setArms((prev) => ({
-      ...prev,
+      ...clearedExcept(modelId),
       [modelId]: { ...prev[modelId], baseline: !prev[modelId].baseline },
     }))
   }
@@ -163,23 +187,25 @@ export function NewRunForm({
       const next = new Set(prev[modelId].providers)
       if (next.has(providerId)) next.delete(providerId)
       else next.add(providerId)
-      return { ...prev, [modelId]: { ...prev[modelId], providers: next } }
+      return { ...clearedExcept(modelId), [modelId]: { ...prev[modelId], providers: next } }
     })
   }
 
-  /** Check or clear both arms for every model at once. */
-  function setAllArms(on: boolean) {
-    const providerIds = providers.map((p) => p.id)
+  /** Clear every arm. There is deliberately no "select all" — see above. */
+  function clearAllArms() {
     setArms(
       Object.fromEntries(
-        models.map((m) => [
-          m.id,
-          on && m.configured
-            ? { baseline: true, providers: new Set(providerIds) }
-            : { baseline: false, providers: new Set<string>() },
-        ]),
+        models.map((m) => [m.id, { baseline: false, providers: new Set<string>() }]),
       ),
     )
+  }
+
+  /** Both arms of one model — the pair, which is the point of the harness. */
+  function selectPair(modelId: string) {
+    setArms({
+      ...clearedExcept(modelId),
+      [modelId]: { baseline: true, providers: new Set(providers.map((p) => p.id)) },
+    })
   }
 
   // Baseline first, then each provider arm — keeps a model's pair adjacent in
@@ -271,20 +297,18 @@ export function NewRunForm({
             </span>
             <button
               type="button"
-              onClick={() => setAllArms(true)}
+              onClick={clearAllArms}
               className="underline underline-offset-2 hover:text-foreground text-muted-foreground"
             >
-              all
-            </button>
-            <button
-              type="button"
-              onClick={() => setAllArms(false)}
-              className="underline underline-offset-2 hover:text-foreground text-muted-foreground"
-            >
-              none
+              clear
             </button>
           </div>
         </div>
+
+        <p className="text-xs text-muted-foreground">
+          One model per run — selecting a model clears the others. Both of its arms stay
+          available, since baseline vs <code>+cg</code> on the same model is the comparison.
+        </p>
 
         {providers.some((p) => !p.configured) && (
           <p className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
