@@ -1,5 +1,5 @@
 import { deterministic } from "@/core/scorers/deterministic"
-import { FIXTURES, listEstates } from "./fixtures"
+import { FIXTURES, listEstates, type FixtureEntities } from "./fixtures"
 import { answerKeyFor } from "./answer-keys"
 import {
   citesRealFiles,
@@ -68,7 +68,19 @@ const ASK_RUBRIC = {
 // regex checks) is designed to work across either fixture — the checks
 // grade the shape of the answer, not any repo-specific fact.
 
-type BaseCase = Omit<EvalCase, "id" | "context">
+/**
+ * `ticket` and `input` may be functions of the surface's verified entities.
+ *
+ * Static text forced every prompt to name one domain, and the four fixtures do
+ * not share one: `payments-api` and `orders.customer_id` exist in none of them.
+ * Templating lets one prompt keep one meaning while naming something that is
+ * actually present in the repo it is asked about.
+ */
+type Templated = string | ((e: FixtureEntities) => string)
+type BaseCase = Omit<EvalCase, "id" | "context" | "ticket" | "input"> & {
+  ticket?: Templated
+  input: Templated
+}
 
 const BASE_CASES: BaseCase[] = [
   // ─── 1. Build a new feature ───────────────────────────────────────────
@@ -129,27 +141,46 @@ const BASE_CASES: BaseCase[] = [
       "statefulness",
     ],
     ticket:
-      "Incident #INC-7714, 03:41 UTC. `payments-api` is returning 5xx across all endpoints. Sample:\n\n```\nGET /payments/health\n→ 503\n  {\"error\": \"upstream_timeout\", \"retryAfter\": 30}\n```\n\nRecent deploy on the service was 40 minutes before the incident. Downstream teams are asking what else is broken.",
+      (e: FixtureEntities) =>
+        `Incident #INC-7714, 03:41 UTC. ${e.coreArea} is failing across the board — requests ` +
+        "return 5xx and callers are timing out. The last deploy touching it landed 40 minutes " +
+        "before the incident. Downstream teams are asking what else is broken.",
     input:
-      "Find the root cause. Enumerate every downstream service and frontend surface that depends on `payments-api`, and for each say whether it is broken right now, degraded, or unaffected. Rank by business impact.",
+      (e: FixtureEntities) =>
+        `Working only from this repository, identify what ${e.coreArea} is and enumerate every ` +
+        "component that depends on it — services, background jobs, and frontend surfaces. For each, " +
+        "say whether it would be broken, degraded, or unaffected while it is down, and rank by " +
+        "blast radius. Cite `path/to/file.ext:line` for each dependency you claim.",
   },
   {
     metadata: { category: "find", subtask: "trace-value", bucket: "discovery" },
     difficulty: "medium",
     capabilityAxis: ["impact_analysis", "multistep", "docs_alignment"],
     ticket:
-      "Support ticket. A user's `notification_email` on their outbound emails is different from what they typed into account settings. We need to prove where the divergence happened before we can fix it.",
+      (e: FixtureEntities) =>
+        `Support ticket. A user reports that the \`${e.traceField}\` shown back to them does not match ` +
+        "what was saved. We need to prove where the divergence happened before we can fix it.",
     input:
-      "Trace how the `notification_email` field flows through the system: from the account-settings form to the API, to the database, to any downstream services (notifications, analytics, invoicing), and back to the user-facing account page. Include every transformation and every place it is stored or cached.",
+      (e: FixtureEntities) =>
+        `Trace how the \`${e.traceField}\` field flows through this codebase: where it enters, how it ` +
+        `is validated and transformed, where it is persisted (it lives in \`${e.dbColumn}\`), and ` +
+        "every place it is read back, cached, or sent onward. Cite `path/to/file.ext:line` at each " +
+        "hop. If a hop does not exist in this repository, say so rather than inventing it.",
   },
   {
     metadata: { category: "find", subtask: "db-change-blast-radius", bucket: "discovery" },
     difficulty: "hard",
     capabilityAxis: ["impact_analysis", "schema_repair", "multistep"],
     ticket:
-      "Ticket #5088 (Data). We want to change `orders.customer_id` from INT to UUID to align with the rest of the identity domain. The column is 12 years old and read from a lot of places.",
+      (e: FixtureEntities) =>
+        `Ticket #5088 (Data). We want to change the type of \`${e.dbColumn}\`. The column is old and ` +
+        "read from a lot of places, so we need the blast radius before anyone touches it.",
     input:
-      "What is the blast radius? Enumerate every service, background job, analytics pipeline, and frontend query that reads or writes `orders.customer_id`. Rank changes by risk (foreign keys, joins, external integrations, denormalized copies). Include a rollout plan that avoids a big-bang cutover.",
+      (e: FixtureEntities) =>
+        `What is the blast radius? Enumerate every place in this repository that reads or writes ` +
+        `\`${e.dbColumn}\` — queries, migrations, models, jobs, and API responses that expose it. ` +
+        "Cite `path/to/file.ext:line` for each. Rank by risk (foreign keys, joins, denormalised " +
+        "copies, external contracts) and give a rollout plan that avoids a big-bang cutover.",
   },
 
   // ─── 3. Ask a question ────────────────────────────────────────────────
@@ -160,7 +191,12 @@ const BASE_CASES: BaseCase[] = [
     ticket:
       "Ticket #4977. Docs review flagged that partners keep hitting endpoints that behave differently from the spec. We want a formal three-way drift audit before the next partner cohort.",
     input:
-      "Detect three-way drift between the OpenAPI spec, the Postman collection, and the running server code. For each divergence, say which of the three is out of date and quote the offending endpoint or field.",
+      (e: FixtureEntities) =>
+        "Detect drift between the API description artefacts in this repository and the server " +
+        `code that implements them${e.hasOpenApiSpec ? " (there is an OpenAPI spec)" : ""}` +
+        `${e.hasPostmanCollection ? " and the Postman collection" : ""}. For each divergence, say ` +
+        "which side is out of date and quote the offending endpoint or field. If an artefact is " +
+        "absent from this repository, say so plainly — that is a valid finding, not a failure.",
   },
   {
     metadata: { category: "ask", subtask: "most-dependencies", bucket: "discovery" },
@@ -227,12 +263,29 @@ assertFullCoverage(BASE_CASES.map((c) => String(c.metadata?.subtask)))
  * `context.repoUrl`, estates via `metadata.estate`, and `resolveWorkspace`
  * handles both. Only the ground-truth checks distinguish them.
  */
+/**
+ * Fallback for a surface that has not declared its entities yet.
+ *
+ * Deliberately generic rather than a plausible-looking guess: a wrong entity
+ * name is exactly the failure this whole mechanism exists to prevent, and a
+ * vague prompt is far less damaging than one that confidently names a table
+ * the repository does not have.
+ */
+const GENERIC_ENTITIES: FixtureEntities = {
+  dbColumn: "the primary user table's email column",
+  traceField: "email",
+  coreArea: "the main API layer",
+  hasOpenApiSpec: false,
+  hasPostmanCollection: false,
+}
+
 const SURFACES = [
   ...FIXTURES.map((f) => ({
     id: f.id,
     label: f.label,
     ref: f.ref,
     estate: undefined as string | undefined,
+    entities: f.entities ?? GENERIC_ENTITIES,
     context: { repoUrl: f.repoUrl },
   })),
   ...listEstates().map((e) => ({
@@ -240,9 +293,15 @@ const SURFACES = [
     label: e.label,
     ref: e.ref,
     estate: e.id,
+    entities: e.entities ?? GENERIC_ENTITIES,
     context: { text: `Estate: ${e.displayName}. ${e.description}` },
   })),
 ]
+
+/** Resolve a templated prompt against the surface it will run on. */
+function resolve(t: Templated | undefined, e: FixtureEntities): string | undefined {
+  return typeof t === "function" ? t(e) : t
+}
 
 /**
  * Extra ground truth that only exists for a specific (prompt, surface) pair.
@@ -271,6 +330,8 @@ function isAccuracyGraded(subtask: string, surface: string): boolean {
 const cases: EvalCase[] = ORDERED.flatMap(({ base, baseId }) =>
   SURFACES.map((f) => ({
     ...base,
+    ticket: resolve(base.ticket, f.entities),
+    input: resolve(base.input, f.entities)!,
     groundTruth: {
       checks: [
         ...(GROUND_TRUTH_BY_SUBTASK[String(base.metadata?.subtask)]?.checks ?? []),

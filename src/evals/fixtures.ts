@@ -21,6 +21,36 @@ import { ANSWER_KEYS } from "./answer-keys"
  * are guaranteed to have seen identical code.
  */
 
+/**
+ * Concrete things a prompt can name, verified to exist at the pinned SHA.
+ *
+ * The prompts used to hardcode a fictional SaaS domain — `payments-api`,
+ * `orders.customer_id`, `notification_email` — and a measurement proved how
+ * badly that misfired: `payments-api` and `orders.customer_id` exist in NONE
+ * of the four fixtures, and `notification_email` in only two. Three of twelve
+ * prompts were asking models to trace, enumerate, and rank things that are not
+ * there.
+ *
+ * The grading made it worse rather than catching it. Citation checks reward
+ * naming any real file, so the winning move was to invent an answer about a
+ * nonexistent entity and cite unrelated real code — while two anti-hedging
+ * checks actively penalised saying "this does not exist here", which was the
+ * only correct answer available. The harness was scoring confabulation.
+ *
+ * Every value below was grepped out of the checkout it belongs to.
+ */
+export type FixtureEntities = {
+  /** Real `table.column` present at the pinned SHA. */
+  dbColumn: string
+  /** Real field that genuinely flows through this system. */
+  traceField: string
+  /** Real subsystem whose failure has downstream consequences. */
+  coreArea: string
+  /** Artifacts that actually exist, so a prompt never demands a missing one. */
+  hasOpenApiSpec: boolean
+  hasPostmanCollection: boolean
+}
+
 export type Fixture = {
   /** Two-letter case-id suffix. */
   id: string
@@ -57,6 +87,7 @@ export type Fixture = {
    * is. Treat the paired delta as the result and the absolute number as
    * indicative only.
    */
+  entities?: FixtureEntities
   contamination: "public-likely-memorised" | "private"
 }
 
@@ -68,6 +99,14 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: "gr",
     label: "grafana",
+    // user.email verified at pkg/services/sqlstore/migrations/user_mig.go:20
+    entities: {
+      dbColumn: "user.email",
+      traceField: "email",
+      coreArea: "the datasource proxy",
+      hasOpenApiSpec: true,
+      hasPostmanCollection: false,
+    },
     displayName: "grafana/grafana",
     repoUrl: "https://github.com/grafana/grafana",
     ref: "main",
@@ -80,6 +119,14 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: "sn",
     label: "sentry",
+    // auth_user.email verified at src/sentry/users/models/user.py:108,213
+    entities: {
+      dbColumn: "auth_user.email",
+      traceField: "email",
+      coreArea: "event ingestion",
+      hasOpenApiSpec: true,
+      hasPostmanCollection: false,
+    },
     displayName: "getsentry/sentry",
     repoUrl: "https://github.com/getsentry/sentry",
     ref: "master",
@@ -92,6 +139,14 @@ export const FIXTURES: readonly Fixture[] = [
   {
     id: "mm",
     label: "mattermost",
+    // Users.Email verified in server/channels/store/sqlstore/user_store.go
+    entities: {
+      dbColumn: "Users.Email",
+      traceField: "email",
+      coreArea: "the channels API",
+      hasOpenApiSpec: false,
+      hasPostmanCollection: false,
+    },
     displayName: "mattermost/mattermost",
     repoUrl: "https://github.com/mattermost/mattermost",
     ref: "master",
@@ -130,6 +185,7 @@ export type Estate = {
   ref: string
   depth: number
   contamination: Fixture["contamination"]
+  entities?: FixtureEntities
 }
 
 
@@ -159,6 +215,15 @@ export const ESTATES: readonly Estate[] = ANSWER_KEYS.map((k) => ({
   ref: "main",
   depth: 1,
   contamination: "public-likely-memorised" as const,
+  // patients/vitals tables and patient_id verified in app/consumers.py;
+  // healthcare-infra ships a .postman directory and per-service openapi.yaml.
+  entities: {
+    dbColumn: "vitals.patient_id",
+    traceField: "patient_id",
+    coreArea: "patients-service",
+    hasOpenApiSpec: true,
+    hasPostmanCollection: true,
+  },
   description:
     `The entire healthcare-org-app estate — all ${k.members.length} repos, checked out side by ` +
     `side. ${k.key.expected.length} services declare an outbound dependency on ${k.target}. ` +

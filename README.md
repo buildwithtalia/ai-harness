@@ -361,6 +361,32 @@ This is not a nicety. The report measured a naive file-searching baseline at 4% 
 
 Cross-repo cells also get a **150-step tool budget** instead of the default 40, because the report's no-graph arm spent 90–133 tool calls per task. At 40 steps the baseline would be truncated mid-search and the graph would "win" on a budget artifact.
 
+### Prompts name what the repo actually has
+
+Every prompt used to hardcode one fictional SaaS domain. Measured against the fixtures:
+
+| Entity the prompt named | Exists in |
+|---|---|
+| `payments-api` | **0 of 4** |
+| `orders.customer_id` | **0 of 4** |
+| `notification_email` | 2 of 4 |
+| a Postman collection | 1 of 4 |
+
+So three of twelve prompts asked models to trace, enumerate and rank things that are not there — and the grading rewarded them for it. Citation checks pay out for naming *any* real file, so the winning move was to invent an answer about a nonexistent entity and cite unrelated real code. Two anti-hedging checks made it worse by penalising "this does not exist here", which on those repos was the only correct answer available. **The harness was scoring confabulation.**
+
+Prompts are now templates over `Fixture.entities`, every value grepped out of the checkout it belongs to:
+
+| Surface | `dbColumn` | `traceField` | `coreArea` |
+|---|---|---|---|
+| grafana | `user.email` | `email` | the datasource proxy |
+| sentry | `auth_user.email` | `email` | event ingestion |
+| mattermost | `Users.Email` | `email` | the channels API |
+| healthcare | `vitals.patient_id` | `patient_id` | patients-service |
+
+Prompts also stop demanding artefacts a repo lacks — `three-way-drift` names the OpenAPI spec and Postman collection only where they exist, and says outright that reporting an absent artefact is a valid finding. `"no OpenAPI spec exists"` was removed from the anti-hedging needles: on mattermost it is simply true. That guard is now strictly about refusing to *look*, never about what was found.
+
+A surface that hasn't declared entities falls back to deliberately vague wording rather than a plausible guess — a wrong table name is the exact failure this mechanism exists to prevent.
+
 ### Ticket framing
 
 Every prompt has a `ticket` block prepended to `input` at run time. Example (build-01):

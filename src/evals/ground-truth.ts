@@ -170,10 +170,18 @@ export const GROUND_TRUTH_BY_SUBTASK: Record<string, GroundTruth> = {
   "three-way-drift": {
     checks: [
       ...grounded(3),
+      // NOTE: not every fixture ships a spec (mattermost does not). This check
+      // is satisfiable by any yaml/json/proto/graphql file, which is broad
+      // enough to hold everywhere — but it is a weak signal, not evidence the
+      // model found a real API description.
       citesRealFilesMatching(PATHS.spec, 1, "spec/schema artefacts"),
       {
         type: "must-not-mention",
-        needles: ["I cannot access", "unable to access the repository", "no OpenAPI spec exists"],
+        // "no OpenAPI spec exists" was in this list. On mattermost that is
+        // simply true, so the check penalised the only correct answer and
+        // rewarded inventing a spec. The guard is now strictly about refusing
+        // to look, never about what was found.
+        needles: ["I cannot access", "unable to access the repository"],
         description: "names what it actually found rather than abstaining",
       },
     ],
