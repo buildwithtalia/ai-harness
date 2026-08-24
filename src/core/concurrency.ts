@@ -8,15 +8,31 @@
  */
 
 /**
- * Cells in flight at once when a run doesn't specify otherwise. Each cell is an
- * independent agent invocation — usually a CLI subprocess plus judge model
- * calls — so unbounded parallelism would spawn one process per cell and blow
- * through provider rate limits.
+ * Cells in flight at once when a run doesn't specify otherwise. Each cell is a
+ * tool-calling loop against a provider, plus judge calls afterwards.
+ *
+ * Deliberately low as a default: the runner narrows this further to whatever
+ * the configured rate limits sustain, so a small default is only ever a floor
+ * on a fast key and a sensible guess on a slow one.
  */
 export const DEFAULT_CONCURRENCY = 4
 
-/** Hard ceiling accepted from the UI / CLI. */
-export const MAX_CONCURRENCY = 12
+/**
+ * Hard ceiling accepted from the UI / CLI.
+ *
+ * This is no longer a rate-limit guard — `rate-limit.ts` enforces RPM/TPM per
+ * provider, and the runner clamps the pool to `suggestedConcurrency()` before
+ * dispatching anything. What remains is a local-resources bound: every
+ * in-flight cell holds its own conversation context, tool results included, and
+ * a cross-repo cell accumulates hundreds of thousands of tokens of it before
+ * finishing. Forty of those is the point where this process's memory, not the
+ * provider, becomes the thing that breaks.
+ *
+ * Raised from 12 because enterprise-tier Anthropic limits (20K RPM, 10M TPM)
+ * sustain roughly 41 concurrent chains, so 12 was leaving most of the key
+ * unused on a 1,176-cell run.
+ */
+export const MAX_CONCURRENCY = 40
 
 /** Coerce untrusted input to a usable pool size. */
 export function clampConcurrency(n: number | undefined): number {

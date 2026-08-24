@@ -729,7 +729,7 @@ Every field on the form, in order:
 | **Epochs** | `epochs` | 3 | Repeats per `(target, case)`. **At 1 you cannot tell a real effect from sampling noise** — the paired statistics need repeated draws. Max 10. |
 | **Budget cap** | `budgetUsd` | blank (= no cap) | The run stops once *estimated* spend reaches this. Aggregates are then over a partial matrix and the manifest records `budgetStopped`. |
 | **Temperature** | `temperature` (hidden) | `0` | Fixed at 0 and not editable from the form. Two arms sampled at different temperatures are not comparable, and an unrecorded provider default makes a run unreproducible. Override only via the CLI's `--temperature`. |
-| **Parallel cells** | `concurrency` | 4 | Cells in flight at once, 1–12. Raise for wall-clock, lower if you hit provider rate limits. Revalidated server-side. |
+| **Parallel cells** | `concurrency` | 4 | Cells in flight at once, 1–40. Narrowed further at run time to whatever the configured rate limits sustain. Raise for wall-clock, lower if you hit provider rate limits. Revalidated server-side. |
 
 Below the fields:
 

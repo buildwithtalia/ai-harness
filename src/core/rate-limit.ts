@@ -30,6 +30,8 @@
  *    configured.
  */
 
+import { MAX_CONCURRENCY } from "./concurrency"
+
 export type ProviderLimits = {
   /** Requests per minute. */
   rpm: number
@@ -289,7 +291,9 @@ export function suggestedConcurrency(
     const byTpm = tpm / (avgTok * REQUESTS_PER_CELL_MINUTE)
     best = Math.max(best, Math.min(byRpm, byTpm))
   }
-  return Math.min(12, Math.max(1, Math.floor(best)))
+  // Ceiling comes from MAX_CONCURRENCY, not a literal — a hardcoded 12 here
+  // silently capped the pool at 12 even after the ceiling was raised to 40.
+  return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(best)))
 }
 
 /** One line per provider, for the run log and the manifest. */
