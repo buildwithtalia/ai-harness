@@ -500,6 +500,17 @@ If a clone fails the cell still runs — without tools, with `repoGrounding` rep
 
 For those 47 there is no list of correct answers anywhere in this repo. A model can answer the wrong thing, cite three real files while doing it, emit conforming JSON, and score well. That is a measurement of **citation hygiene and format compliance**, not of accuracy — and reporting it as accuracy would be false.
 
+**Spec-vs-code drift was investigated as the next key and rejected.** `scripts/derive-drift-key.mts` records the evidence; `src/evals/drift-key.json` records the verdict. None of the four fixtures can ground it:
+
+| Fixture | Why not |
+|---|---|
+| grafana | `public/openapi3.json` is a generated build artifact containing all 42 enterprise paths, implemented in a separate closed repo — "documented but absent" is a packaging boundary, not drift |
+| sentry | `api-docs/openapi.json` is **built from the code** in CI, so it cannot drift from it by construction |
+| mattermost | No spec at all; `api/.spectral.yaml` is a linter ruleset |
+| healthcare | 3 services ship a hand-written `openapi.yaml`, and parsed properly they agree with the code exactly — **0 drift**, so the key would be "none", which a model that never opened a file also answers correctly |
+
+A key that is wrong is worse than no key, because it mismarks every model permanently and silently. So no drift check is wired, and `docs-drift` stays quality-graded.
+
 The gap is not laziness, it is provenance. A real key needs a declared source of truth: healthcare ships a service registry, so "which has the most dependencies" has an exact answer. grafana, sentry and mattermost have nothing equivalent, and manufacturing one would mean the harness inferring a call graph — which is the job of the system under test, so grading against it would be marking the Context Graph's homework with the Context Graph.
 
 Note also that the healthcare key is **service-level, not endpoint-level**: the registry declares no endpoints. The prompt permits "whatever proxy for caller is defensible for this repo", and the check records `unit: "services"` rather than implying a precision it does not have.

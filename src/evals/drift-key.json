@@ -1,0 +1,17 @@
+{
+  "generatedFrom": "healthcare estate: openapi.yaml vs app/routes.py, method level",
+  "note": "Grafana was rejected as a source: its openapi3.json is a generated artifact containing enterprise paths implemented in a separate closed repo, so absence from the checkout is a packaging boundary rather than drift.",
+  "servicesCovered": [
+    "healthcare-appointment-slots",
+    "healthcare-appointments",
+    "healthcare-prescriptions"
+  ],
+  "drifts": [],
+  "verdict": "NOT DERIVABLE from any current fixture \u2014 no drift check is wired.",
+  "fixturesEvaluated": {
+    "grafana": "public/openapi3.json is a generated build artifact (Makefile OAPI_SPEC_TARGET) and contains all 42 paths from api-enterprise-spec.json. Enterprise code lives in a separate closed repo, so 'documented but absent' is a packaging boundary, not drift. Only 11% of spec paths matched a route registration, which is the extractor failing rather than 184 phantom endpoints.",
+    "healthcare": "3 services ship openapi.yaml. Parsed properly, spec and code agree exactly at method level \u2014 0 drift. A 'find the drift' key here would be satisfied by answering 'none', which a model that never opened a file also answers correctly.",
+    "mattermost": "No spec. api/.spectral.yaml is a linter ruleset, not an API description.",
+    "sentry": "api-docs/openapi.json is BUILT from the code in CI ('Build OpenAPI Derefed JSON', plus an openapi-diff workflow). Generated from the source it would be compared against, so it cannot drift from it by construction."
+  }
+}
