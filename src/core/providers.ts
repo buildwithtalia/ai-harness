@@ -1,9 +1,10 @@
-import { gateway, type LanguageModel } from "ai"
+import { gateway, wrapLanguageModel, type LanguageModel } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { familyOf, resolveModelId } from "./models"
 import type { ModelId } from "./types"
+import { limiterFor } from "./rate-limit"
 
 /**
  * Resolve a model id to a callable model.
@@ -53,7 +54,20 @@ export function resolveTransport(modelId: ModelId): ResolvedModel {
   return { transport: "gateway", name: callId }
 }
 
-export function getModel(modelId: ModelId): LanguageModel {
+/** Rough token cost of a request, for reserving bucket capacity up front.
+ * The prompt is all we can see before the call, so output is estimated at a
+ * flat 1k — under-reserving is corrected by `settle()` once usage is known. */
+function estimateTokens(params: { prompt?: unknown }): number {
+  let chars = 0
+  try {
+    chars = JSON.stringify(params.prompt ?? "").length
+  } catch {
+    chars = 0
+  }
+  return Math.ceil(chars / 4) + 1_000
+}
+
+function rawModel(modelId: ModelId): Exclude<LanguageModel, string> {
   const { transport, name } = resolveTransport(modelId)
   switch (transport) {
     case "anthropic":
@@ -65,4 +79,45 @@ export function getModel(modelId: ModelId): LanguageModel {
     case "gateway":
       return gateway(name)
   }
+}
+
+/**
+ * Every provider call goes through the transport's rate limiter.
+ *
+ * Wrapping at the model rather than at the cell is deliberate: a cell is a
+ * tool-calling loop of up to 150 sequential requests, and judge calls happen
+ * outside the cell entirely. Gating the pool would have bounded neither. Here,
+ * every request the harness makes — loop step, retry, or judge — has to take a
+ * slot before it goes out.
+ *
+ * Keyed on transport, not model, because the limit belongs to the API key.
+ * Two Anthropic models on one key share a budget and must share a bucket.
+ */
+export function getModel(modelId: ModelId): LanguageModel {
+  const { transport } = resolveTransport(modelId)
+  const limiter = limiterFor(transport)
+  return wrapLanguageModel({
+    model: rawModel(modelId),
+    middleware: {
+      wrapGenerate: async ({ doGenerate, params }) => {
+        const est = estimateTokens(params as { prompt?: unknown })
+        await limiter.acquire(est)
+        const res = await doGenerate()
+        limiter.observeHeaders(res.response?.headers)
+        // Provider-level usage is NESTED — `inputTokens.total`, not a number.
+        // Reading it as flat silently yields 0 and the bucket never settles,
+        // which is the same shape that once made costUsd read as $0.
+        const u = res.usage as
+          | { inputTokens?: { total?: number }; outputTokens?: { total?: number } }
+          | undefined
+        limiter.settle(est, (u?.inputTokens?.total ?? 0) + (u?.outputTokens?.total ?? 0))
+        return res
+      },
+      wrapStream: async ({ doStream, params }) => {
+        const est = estimateTokens(params as { prompt?: unknown })
+        await limiter.acquire(est)
+        return doStream()
+      },
+    },
+  })
 }

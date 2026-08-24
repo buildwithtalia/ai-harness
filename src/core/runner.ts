@@ -4,7 +4,7 @@ import {
   type LanguageModelUsage,
   type ModelMessage,
 } from "ai"
-import { getModel } from "./providers"
+import { getModel, resolveTransport } from "./providers"
 import { estimateCostUsd } from "./cost"
 import { ensureIngested, getProvider, listProviders } from "./context-providers"
 import { baselineOf, parseTargetId } from "./target"
@@ -22,6 +22,7 @@ import {
 import { repoTools } from "./tools/repo-tools"
 import { fixtureForCaseId, fixtureForRepoUrl, getEstate } from "@/evals/fixtures"
 import { clampConcurrency, drainPool } from "./concurrency"
+import { describeLimits, suggestedConcurrency } from "./rate-limit"
 import { notifySkill } from "./skill-hook"
 import {
   appendCase,
@@ -740,7 +741,24 @@ async function executeRun(
       for (let epoch = 0; epoch < epochs; epoch++) cells.push({ model, ec, epoch })
     }
   }
-  const concurrency = clampConcurrency(opts.concurrency)
+  // Ask for no more parallelism than the providers can serve.
+  //
+  // The token bucket in rate-limit.ts is what actually enforces the limit, so
+  // exceeding this would be throttled rather than rejected — but it would queue
+  // inside the harness with cells sitting "in flight" for minutes, which reads
+  // as a hang. Clamping keeps the progress display honest about what is moving.
+  const requested = clampConcurrency(opts.concurrency)
+  const transports = [...new Set(models.map((m) => resolveTransport(m).transport))]
+  const sustainable = suggestedConcurrency(transports)
+  const concurrency = Math.min(requested, sustainable)
+  for (const line of describeLimits(transports)) console.log(`[ratelimit] ${line}`)
+  if (concurrency < requested) {
+    console.warn(
+      `[ratelimit] running ${concurrency} cell(s) in parallel, not ${requested} — that is all ` +
+        `the configured limits sustain. Set <PROVIDER>_RPM / <PROVIDER>_TPM if your key is on a ` +
+        `higher tier than the defaults.`,
+    )
+  }
 
   // Resume: anything already on disk for this run id is not re-run. Cheaper
   // than re-deriving, and it means a crashed run resumes where it
