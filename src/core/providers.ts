@@ -102,7 +102,15 @@ export function getModel(modelId: ModelId): LanguageModel {
       wrapGenerate: async ({ doGenerate, params }) => {
         const est = estimateTokens(params as { prompt?: unknown })
         await limiter.acquire(est)
-        const res = await doGenerate()
+        let res
+        try {
+          res = await doGenerate()
+        } catch (err) {
+          // A refusal often states the real ceiling; learn from it so the
+          // retry and every later cell respect it.
+          limiter.observeError(err)
+          throw err
+        }
         limiter.observeHeaders(res.response?.headers)
         // Provider-level usage is NESTED — `inputTokens.total`, not a number.
         // Reading it as flat silently yields 0 and the bucket never settles,

@@ -97,18 +97,16 @@ export const MODELS: ModelSpec[] = [
     family: "openai",
     rates: { input: 0.15, output: 0.6 },
   },
-  {
-    id: "google/gemini-2.5-pro",
-    displayName: "Gemini 2.5 Pro",
-    family: "google",
-    rates: { input: 3.5, output: 10.5 },
-  },
-  {
-    id: "google/gemini-2.5-flash",
-    displayName: "Gemini 2.5 Flash",
-    family: "google",
-    rates: { input: 0.3, output: 2.5 },
-  },
+  // Gemini 2.5 was retired: the API answers 404 with "no longer available to
+  // new users" for gemini-2.5-{pro,flash}, so those entries could never run on
+  // a freshly issued key. These are the ids this key actually resolves.
+  // Left unpriced deliberately — published 3.x rates aren't confirmed here, and
+  // an invented rate is worse than a visible "unpriced" tag, which the run form
+  // shows and the cost estimator excludes.
+  { id: "google/gemini-3.7-flash", displayName: "Gemini 3.7 Flash", family: "google" },
+  { id: "google/gemini-3.6-flash", displayName: "Gemini 3.6 Flash", family: "google" },
+  { id: "google/gemini-3.5-flash", displayName: "Gemini 3.5 Flash", family: "google" },
+  { id: "google/gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro", family: "google" },
 ]
 
 const BY_ID = new Map(MODELS.map((m) => [m.id, m]))

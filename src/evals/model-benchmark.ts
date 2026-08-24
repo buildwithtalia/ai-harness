@@ -266,7 +266,7 @@ const AB_MODELS = [
   "anthropic/claude-opus-4-7",
   "anthropic/claude-sonnet-4-5",
   "openai/gpt-5",
-  "google/gemini-2.5-pro",
+  "google/gemini-3.7-flash",
 ] as const
 
 /**

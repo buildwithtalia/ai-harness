@@ -42,13 +42,14 @@ export type ProviderLimits = {
  *
  * Anthropic tier 1 is 50 RPM / 30k input TPM; OpenAI tier 1 for the GPT-5 family
  * is around 500 RPM / 30k TPM; Google's free tier for Gemini is far tighter,
- * about 10 RPM / 250k TPM on Flash and less on Pro — and free tier is the one
+ * 5 RPM / 250k TPM on Flash — measured, not guessed: the API's own 429 says
+ * `limit: 5` for generate_content_free_tier_requests. Free tier is the one
  * people actually start on, so that is what the default assumes.
  */
 const DEFAULTS: Record<string, ProviderLimits> = {
   anthropic: { rpm: 50, tpm: 30_000 },
   openai: { rpm: 500, tpm: 30_000 },
-  google: { rpm: 10, tpm: 250_000 },
+  google: { rpm: 5, tpm: 250_000 },
   gateway: { rpm: 60, tpm: 100_000 },
   unknown: { rpm: 60, tpm: 60_000 },
 }
@@ -194,6 +195,37 @@ class ProviderLimiter {
     // Keep the chain alive even if a waiter is cancelled upstream.
     this.queue = mine.catch(() => {})
     return mine
+  }
+
+  /**
+   * Tighten from a rejection body.
+   *
+   * Google does not send rate-limit headers, but its 429 says exactly what the
+   * ceiling is:
+   *
+   *   Quota exceeded for metric: ...generate_content_free_tier_requests,
+   *   limit: 5, model: gemini-3.6-flash
+   *
+   * That is the only place the real number appears — the response headers on a
+   * SUCCESSFUL call report `x-gemini-service-tier: standard` and no figures at
+   * all, which reads as a paid tier while the quota being enforced is the free
+   * one. Parsing the refusal is the difference between discovering the limit
+   * and guessing it.
+   *
+   * Same one-way rule as headers: this can only narrow.
+   */
+  observeError(err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const m = /limit:\s*(\d+)/i.exec(msg)
+    if (!m) return
+    const n = Number(m[1])
+    if (!Number.isFinite(n) || n <= 0 || n >= this.limits.rpm) return
+    this.limits = { ...this.limits, rpm: n }
+    this.requests.setRate(n, n)
+    console.warn(
+      `[ratelimit] ${this.provider}: provider refused and reported limit ${n} — ` +
+        `tightening to ${n} RPM. Set ${this.provider.toUpperCase()}_RPM to avoid rediscovering this.`,
+    )
   }
 
   /** Reconcile the estimate against what the call actually cost. */
