@@ -252,8 +252,12 @@ export type RunManifest = {
    * all-zero matrix, which reads as "the models did badly" rather than "nothing
    * ran". These make the difference explicit.
    */
+  /** Cells the run intended to execute. */
   cellsTotal?: number
   cellsErrored?: number
+  /** Planned but never attempted — the circuit breaker or the budget cap
+   * stopped the run before reaching them. */
+  cellsSkipped?: number
   /** The most common error, when any cell failed. */
   dominantError?: { message: string; count: number }
   /** Set when the run was cut short by an unrecoverable provider error

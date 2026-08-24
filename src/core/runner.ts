@@ -689,13 +689,25 @@ function buildArmStats(models: ModelId[], all: CaseResult[]): ArmComparison[] {
 }
 
 /** Cell outcomes, so a manifest can't imply success it didn't have. */
-function errorSummary(all: CaseResult[]): {
+/**
+ * `planned` is passed in rather than derived from `all`, because a run that
+ * trips the circuit breaker never records the cells it skipped. Reporting
+ * `cellsTotal = all.length` made a run that planned 3 cells, errored on the
+ * first and abandoned two read as "1 of 1 cells failed" — a complete tiny run
+ * rather than a run cut short with most of it never attempted.
+ */
+function errorSummary(
+  all: CaseResult[],
+  planned: number,
+): {
   cellsTotal: number
   cellsErrored: number
+  cellsSkipped: number
   dominantError?: { message: string; count: number }
 } {
+  const skipped = Math.max(0, planned - all.length)
   const errs = all.filter((r) => r.error)
-  if (!errs.length) return { cellsTotal: all.length, cellsErrored: 0 }
+  if (!errs.length) return { cellsTotal: planned, cellsErrored: 0, cellsSkipped: skipped }
   const counts = new Map<string, number>()
   for (const r of errs) {
     // Group on a prefix: provider messages often carry a per-request id tail.
@@ -703,7 +715,12 @@ function errorSummary(all: CaseResult[]): {
     counts.set(key, (counts.get(key) ?? 0) + 1)
   }
   const [message, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-  return { cellsTotal: all.length, cellsErrored: errs.length, dominantError: { message, count } }
+  return {
+    cellsTotal: planned,
+    cellsErrored: errs.length,
+    cellsSkipped: skipped,
+    dominantError: { message, count },
+  }
 }
 
 function aggregateFor(rs: CaseResult[]) {
@@ -980,7 +997,7 @@ async function executeRun(
           models.map((m) => [m, aggregateFor(perModelResults[m])]),
         ),
       },
-      ...errorSummary(allResults),
+      ...errorSummary(allResults, cells.length),
       // Name the providers that died. "the run aborted" hid which half of the
       // matrix is missing and which half is a real result.
       abortedReason: deadFamilies.size

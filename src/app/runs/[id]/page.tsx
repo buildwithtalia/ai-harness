@@ -119,9 +119,21 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
             }`}
           >
             <div className="font-medium">
-              {manifest.cellsErrored === manifest.cellsTotal
-                ? `No cell produced an answer — all ${manifest.cellsTotal} failed. There is nothing to read in the matrix below.`
-                : `${manifest.cellsErrored} of ${manifest.cellsTotal} cells failed — scores below are over the remainder.`}
+              {(() => {
+                const total = manifest.cellsTotal ?? 0
+                const errored = manifest.cellsErrored ?? 0
+                const skipped = manifest.cellsSkipped ?? 0
+                const attempted = total - skipped
+                // Skipped cells were never attempted, so folding them into
+                // "failed" would blame the model for a run that stopped early.
+                const tail = skipped
+                  ? ` ${skipped} more ${skipped === 1 ? "was" : "were"} never attempted.`
+                  : ""
+                if (errored > 0 && errored === attempted) {
+                  return `No cell produced an answer — all ${errored} attempted failed.${tail} There is nothing to read in the matrix below.`
+                }
+                return `${errored} of ${attempted} attempted cells failed — scores below are over the remainder.${tail}`
+              })()}
             </div>
             {manifest.dominantError && (
               <pre className="mt-1.5 whitespace-pre-wrap font-mono text-[11px] opacity-90">
