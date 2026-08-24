@@ -23,9 +23,9 @@ import { repoTools } from "./tools/repo-tools"
 import { fixtureForCaseId, fixtureForRepoUrl, getEstate } from "@/evals/fixtures"
 import { clampConcurrency, drainPool } from "./concurrency"
 import {
+  bucketFor,
   describeLimits,
   estimateWallClockMinutes,
-  limitsFor,
   suggestedConcurrency,
 } from "./rate-limit"
 import { notifySkill } from "./skill-hook"
@@ -770,10 +770,13 @@ async function executeRun(
   // inside the harness with cells sitting "in flight" for minutes, which reads
   // as a hang. Clamping keeps the progress display honest about what is moving.
   const requested = clampConcurrency(opts.concurrency)
-  const transports = [...new Set(models.map((m) => resolveTransport(m).transport))]
-  const sustainable = suggestedConcurrency(transports)
+  // Model ids, not transports: quota groups are per model on both Anthropic
+  // and OpenAI, so collapsing to a transport would size the pool off the wrong
+  // bucket (gpt-5's 500K rather than gpt-4o's 30K, say).
+  const bareModels = [...new Set(models.map((m) => baselineOf(m)))]
+  const sustainable = suggestedConcurrency(bareModels)
   const concurrency = Math.min(requested, sustainable)
-  for (const line of describeLimits(transports)) console.log(`[ratelimit] ${line}`)
+  for (const line of describeLimits(bareModels)) console.log(`[ratelimit] ${line}`)
   // Say how long this will take before it starts. A rate-limited run that is
   // working correctly is indistinguishable from a hung one from the outside.
   const estateCells = cells.filter((c) => c.ec.metadata?.estate).length
@@ -783,7 +786,7 @@ async function executeRun(
       : (estateCells * ESTATE_MAX_STEPS + (cells.length - estateCells) * DEFAULT_MAX_STEPS) /
         cells.length
   const etaMin = estimateWallClockMinutes({
-    providers: transports,
+    providers: bareModels,
     cells: cells.length,
     concurrency,
     avgStepsPerCell: avgSteps,
@@ -792,7 +795,7 @@ async function executeRun(
     console.warn(
       `[ratelimit] worst case ~${Math.round(etaMin)} min of rate-limit waiting for ` +
         `${cells.length} cell(s) — the slowest provider allows ` +
-        `${Math.min(...transports.map((t) => limitsFor(t).rpm))} requests/min and a cell makes up ` +
+        `${Math.min(...bareModels.map((m) => bucketFor(m).limits.rpm))} requests/min and a cell makes up ` +
         `to ${Math.round(avgSteps)} of them in sequence. Cells finish sooner if the model needs ` +
         `fewer steps.`,
     )

@@ -139,17 +139,22 @@ Two consequences of going parallel:
 
 Concurrency bounds **cells**, not requests — and a cell is a tool-calling loop of up to 150 sequential requests, plus a judge call outside it. So `--concurrency=4` never meant "4 requests in flight"; it meant four chains each firing as fast as the provider answers, with no ceiling on the rate.
 
-`src/core/rate-limit.ts` puts a **token bucket in front of every provider call**, keyed on transport (not model — the limit belongs to the API key, so two Anthropic models share one bucket). It's wired via `wrapLanguageModel`, so every loop step, retry and judge call has to take a slot before it goes out.
+`src/core/rate-limit.ts` puts a **token bucket in front of every provider call**, wired via `wrapLanguageModel` so every loop step, retry and judge call has to take a slot before it goes out.
+
+Buckets are keyed on the vendor's **quota group**, not the transport, because both Anthropic and OpenAI meter per model and the spread is wide: on one account `gpt-5` has 500K TPM while `gpt-4o` has 30K. A single shared bucket sized for the former let the latter run 16× over its ceiling. Groups come from `ModelSpec.limits` in `src/core/models.ts` — models that genuinely share a quota share a group (Anthropic meters by family, OpenAI by console row). A model with no catalog entry falls back to the provider-wide bucket.
 
 Two buckets per provider, both continuously refilling over a 60s window rather than resetting on a fixed boundary — a fixed window lets the whole minute's budget burn in the first second, which is exactly the burst that trips the provider's own limiter.
 
-| Source | Precedence |
+| Source | Role |
 |---|---|
-| `<PROVIDER>_RPM` / `<PROVIDER>_TPM` env | highest |
-| Built-in lowest-tier defaults | fallback |
-| Provider response headers | tightens at runtime, **never widens** |
+| `<PROVIDER>_RPM` / `<PROVIDER>_TPM` env | provider-wide **ceiling** |
+| `ModelSpec.limits` in the catalog | per-group figure; effective limit is the lower of the two |
+| Built-in lowest-tier defaults | used when no env value is set |
+| Provider response headers, and the `limit: N` in a 429 body | tighten at runtime, **never widen** |
 
-Defaults: `anthropic` 50 RPM / 30k TPM, `openai` 500 / 30k, `google` 10 / 250k.
+Defaults: `anthropic` 50 RPM / 30k TPM, `openai` 500 / 30k, `google` 5 / 250k.
+
+So `OPENAI_TPM=100000` throttles every OpenAI model to 100K even where the vendor allows 500K, while the catalog can only tighten from there — one knob to slow everything down, and per-model accuracy underneath it.
 
 **TPM is the constraint here, not RPM.** A cross-repo cell sends ~600k input tokens across its steps, because every tool result is resent with the next request and context grows quadratically. On a 30k TPM key that is twenty minutes of the entire budget for one cell — which is why the suggested concurrency on an entry-tier key is **1**, and why raising it just queues work inside the limiter instead of making it faster. Set your real limits and the pool widens automatically (a 2M TPM OpenAI tier suggests 8).
 

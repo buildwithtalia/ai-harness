@@ -4,7 +4,7 @@ import { createOpenAI } from "@ai-sdk/openai"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { familyOf, resolveModelId } from "./models"
 import type { ModelId } from "./types"
-import { limiterFor } from "./rate-limit"
+import { limiterForModel } from "./rate-limit"
 
 /**
  * Resolve a model id to a callable model.
@@ -94,8 +94,8 @@ function rawModel(modelId: ModelId): Exclude<LanguageModel, string> {
  * Two Anthropic models on one key share a budget and must share a bucket.
  */
 export function getModel(modelId: ModelId): LanguageModel {
-  const { transport } = resolveTransport(modelId)
-  const limiter = limiterFor(transport)
+  // Keyed on the model's quota group, not its transport — see bucketFor.
+  const limiter = limiterForModel(modelId)
   return wrapLanguageModel({
     model: rawModel(modelId),
     middleware: {

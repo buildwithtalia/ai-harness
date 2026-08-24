@@ -30,6 +30,25 @@ export type ModelSpec = {
    */
   rates?: { input: number; output: number }
   /**
+   * The vendor's own rate limit for this model, and which bucket it shares.
+   *
+   * Both Anthropic and OpenAI meter per model, not per key, and the spread is
+   * wide enough to matter: on this account gpt-5 gets 500K TPM while gpt-4o
+   * gets 30K — 16x — and one shared bucket sized for the former lets the
+   * latter run far over its own ceiling.
+   *
+   * `group` is what the limiter keys on. Models that genuinely share a quota
+   * share a group (Anthropic meters by model family; OpenAI's console lists
+   * "shared limits" per entry). Omit the field entirely when the vendor's
+   * figure isn't known — the model then falls back to the provider-wide
+   * bucket, which is the conservative behaviour.
+   *
+   * TPM is one combined input+output number because the buckets are combined.
+   * For Anthropic, which publishes them separately, this is the INPUT limit:
+   * the suite runs ~50:1 input-heavy, so bounding on input keeps both under.
+   */
+  limits?: { group: string; rpm: number; tpm: number }
+  /**
    * Dated snapshot to call instead of the alias.
    *
    * `anthropic/claude-opus-4-7` is a moving pointer: the weights behind it can
@@ -52,47 +71,59 @@ export type ModelSpec = {
 export const MODELS: ModelSpec[] = [
   {
     id: "anthropic/claude-sonnet-4-5",
+    limits: { group: "anthropic:sonnet-4x", rpm: 20_000, tpm: 10_000_000 },
     displayName: "Claude Sonnet 4.5",
     family: "anthropic",
     rates: { input: 3, output: 15 },
   },
   {
     id: "anthropic/claude-opus-4-7",
+    limits: { group: "anthropic:opus-4x", rpm: 20_000, tpm: 15_000_000 },
     displayName: "Claude Opus 4.7",
     family: "anthropic",
     rates: { input: 15, output: 75 },
   },
   {
     id: "anthropic/claude-haiku-4-5",
+    limits: { group: "anthropic:haiku-4x", rpm: 20_000, tpm: 10_000_000 },
     displayName: "Claude Haiku 4.5",
     family: "anthropic",
     rates: { input: 1, output: 5 },
   },
-  { id: "openai/gpt-5.6-sol", displayName: "GPT-5.6 Sol", family: "openai" },
-  { id: "openai/gpt-5.5", displayName: "GPT-5.5", family: "openai" },
-  { id: "openai/gpt-5.4", displayName: "GPT-5.4", family: "openai" },
-  { id: "openai/gpt-5.3-codex", displayName: "GPT-5.3 Codex", family: "openai" },
+  { id: "openai/gpt-5.6-sol",
+    limits: { group: "openai:gpt-5.6-sol", rpm: 500, tpm: 500_000 }, displayName: "GPT-5.6 Sol", family: "openai" },
+  { id: "openai/gpt-5.5",
+    limits: { group: "openai:gpt-5.5", rpm: 500, tpm: 500_000 }, displayName: "GPT-5.5", family: "openai" },
+  { id: "openai/gpt-5.4",
+    limits: { group: "openai:gpt-5.4", rpm: 500, tpm: 500_000 }, displayName: "GPT-5.4", family: "openai" },
+  { id: "openai/gpt-5.3-codex",
+    limits: { group: "openai:gpt-5.3-codex", rpm: 500, tpm: 500_000 }, displayName: "GPT-5.3 Codex", family: "openai" },
   {
     id: "openai/gpt-5",
+    limits: { group: "openai:gpt-5", rpm: 500, tpm: 500_000 },
     displayName: "GPT-5",
     family: "openai",
     rates: { input: 5, output: 20 },
   },
   {
     id: "openai/gpt-5-mini",
+    limits: { group: "openai:gpt-5-mini", rpm: 500, tpm: 500_000 },
     displayName: "GPT-5 mini",
     family: "openai",
     rates: { input: 0.5, output: 2 },
   },
-  { id: "openai/gpt-4.1", displayName: "GPT-4.1", family: "openai" },
+  { id: "openai/gpt-4.1",
+    limits: { group: "openai:gpt-4.1", rpm: 500, tpm: 30_000 }, displayName: "GPT-4.1", family: "openai" },
   {
     id: "openai/gpt-4o",
+    limits: { group: "openai:gpt-4o", rpm: 500, tpm: 30_000 },
     displayName: "GPT-4o",
     family: "openai",
     rates: { input: 2.5, output: 10 },
   },
   {
     id: "openai/gpt-4o-mini",
+    limits: { group: "openai:gpt-4o-mini", rpm: 500, tpm: 200_000 },
     displayName: "GPT-4o mini",
     family: "openai",
     rates: { input: 0.15, output: 0.6 },
@@ -136,6 +167,11 @@ export function familyOf(id: string): ModelFamily | null {
  * first because `getModel` prefers them; the gateway key is the universal
  * fallback.
  */
+/** The vendor's limit bucket for a model, if the catalog knows one. */
+export function limitGroupFor(id: string): ModelSpec["limits"] | undefined {
+  return BY_ID.get(id)?.limits
+}
+
 export function envCandidatesFor(id: string): string[] {
   switch (familyOf(id)) {
     case "anthropic":

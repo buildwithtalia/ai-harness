@@ -31,6 +31,7 @@
  */
 
 import { MAX_CONCURRENCY } from "./concurrency"
+import { familyOf, limitGroupFor } from "./models"
 
 export type ProviderLimits = {
   /** Requests per minute. */
@@ -248,6 +249,45 @@ export function limiterFor(provider: string): ProviderLimiter {
   return l
 }
 
+/**
+ * The bucket a model belongs to, and the limits that apply to it.
+ *
+ * Keyed on the vendor's own quota group rather than the transport, because
+ * both Anthropic and OpenAI meter per model. Sharing one openai bucket sized
+ * for gpt-5 (500K TPM) let gpt-4o (30K) run 16x over its ceiling; sharing one
+ * anthropic bucket made Opus (15M) wait on Sonnet's tighter 10M.
+ *
+ * The provider-wide env value stays authoritative as a CEILING: the effective
+ * limit is the lower of it and the catalog figure. So `OPENAI_TPM=100000`
+ * throttles every OpenAI model to 100K even where the vendor allows 500K, and
+ * a catalog entry can only ever tighten from there. Models with no catalog
+ * entry fall back to the provider bucket unchanged.
+ */
+export function bucketFor(modelId: string): { key: string; limits: ProviderLimits } {
+  const transport = familyOf(modelId) ?? "unknown"
+  const envLimits = limitsFor(transport)
+  const group = limitGroupFor(modelId)
+  if (!group) return { key: transport, limits: envLimits }
+  return {
+    key: group.group,
+    limits: {
+      rpm: Math.min(envLimits.rpm, group.rpm),
+      tpm: Math.min(envLimits.tpm, group.tpm),
+    },
+  }
+}
+
+/** Limiter for a specific model, honouring its quota group. */
+export function limiterForModel(modelId: string) {
+  const { key, limits } = bucketFor(modelId)
+  let l = limiters.get(key)
+  if (!l) {
+    l = new ProviderLimiter(key, limits)
+    limiters.set(key, l)
+  }
+  return l
+}
+
 /** For tests and for reporting the effective limits on a run manifest. */
 export function activeLimits(): Record<string, ProviderLimits> {
   return Object.fromEntries([...limiters].map(([k, v]) => [k, v.current()]))
@@ -280,13 +320,14 @@ export function __resetLimiters() {
 const REQUESTS_PER_CELL_MINUTE = 20
 
 export function suggestedConcurrency(
-  providers: readonly string[],
+  /** Model ids, so per-model quota groups are respected. */
+  models: readonly string[],
   opts: { avgTokensPerRequest?: number } = {},
 ): number {
   const avgTok = opts.avgTokensPerRequest ?? 12_000
   let best = 0
-  for (const p of providers) {
-    const { rpm, tpm } = limitsFor(p)
+  for (const m of models) {
+    const { rpm, tpm } = bucketFor(m).limits
     const byRpm = rpm / REQUESTS_PER_CELL_MINUTE
     const byTpm = tpm / (avgTok * REQUESTS_PER_CELL_MINUTE)
     best = Math.max(best, Math.min(byRpm, byTpm))
@@ -296,13 +337,16 @@ export function suggestedConcurrency(
   return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(best)))
 }
 
-/** One line per provider, for the run log and the manifest. */
-export function describeLimits(providers: readonly string[]): string[] {
-  return [...new Set(providers)].map((p) => {
-    const { rpm, tpm } = limitsFor(p)
-    const src = (k: string) => (process.env[`${p.toUpperCase()}_${k}`]?.trim() ? "env" : "default")
-    return `${p}: ${rpm} RPM (${src("RPM")}), ${tpm.toLocaleString()} TPM (${src("TPM")})`
-  })
+/** One line per distinct quota bucket in the run. */
+export function describeLimits(models: readonly string[]): string[] {
+  const seen = new Map<string, ProviderLimits>()
+  for (const m of models) {
+    const { key, limits } = bucketFor(m)
+    if (!seen.has(key)) seen.set(key, limits)
+  }
+  return [...seen].map(
+    ([key, { rpm, tpm }]) => `${key}: ${rpm} RPM, ${tpm.toLocaleString()} TPM`,
+  )
 }
 
 /**
@@ -316,12 +360,13 @@ export function describeLimits(providers: readonly string[]): string[] {
  * looks identical to a hang unless someone says so beforehand.
  */
 export function estimateWallClockMinutes(opts: {
+  /** Model ids. */
   providers: readonly string[]
   cells: number
   concurrency: number
   avgStepsPerCell: number
 }): number {
-  const slowestRpm = Math.min(...opts.providers.map((p) => limitsFor(p).rpm))
+  const slowestRpm = Math.min(...opts.providers.map((m) => bucketFor(m).limits.rpm))
   if (!Number.isFinite(slowestRpm) || slowestRpm <= 0) return 0
   const secondsPerRequest = 60 / slowestRpm
   const perCellSeconds = opts.avgStepsPerCell * secondsPerRequest
