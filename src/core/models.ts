@@ -145,7 +145,7 @@ export function envCandidatesFor(id: string): string[] {
     case "openai":
       return ["CODEX_API_KEY", "AI_GATEWAY_API_KEY"]
     case "google":
-      return ["AI_GATEWAY_API_KEY"]
+      return ["GOOGLE_API_KEY", "AI_GATEWAY_API_KEY"]
     default:
       return ["AI_GATEWAY_API_KEY"]
   }

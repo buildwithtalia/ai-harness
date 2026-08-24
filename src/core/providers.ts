@@ -1,6 +1,7 @@
 import { gateway, type LanguageModel } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
+import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { familyOf, resolveModelId } from "./models"
 import type { ModelId } from "./types"
 
@@ -20,7 +21,7 @@ import type { ModelId } from "./types"
  * works against both transports.
  */
 
-export type Transport = "anthropic" | "openai" | "gateway"
+export type Transport = "anthropic" | "openai" | "google" | "gateway"
 
 export type ResolvedModel = {
   transport: Transport
@@ -42,6 +43,13 @@ export function resolveTransport(modelId: ModelId): ResolvedModel {
   if (family === "openai" && process.env.CODEX_API_KEY) {
     return { transport: "openai", name: bare }
   }
+  // Direct Google, same shape as the two above. Previously google/* could only
+  // reach the gateway, so with AI_GATEWAY_API_KEY unset the Gemini targets were
+  // unrunnable — and that is the one family with a usable free tier, which is
+  // exactly what you want when the paid providers are out of credit.
+  if (family === "google" && process.env.GOOGLE_API_KEY) {
+    return { transport: "google", name: bare }
+  }
   return { transport: "gateway", name: callId }
 }
 
@@ -52,6 +60,8 @@ export function getModel(modelId: ModelId): LanguageModel {
       return createAnthropic({ apiKey: process.env.CLAUDE_API_KEY! })(name)
     case "openai":
       return createOpenAI({ apiKey: process.env.CODEX_API_KEY! })(name)
+    case "google":
+      return createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_API_KEY! })(name)
     case "gateway":
       return gateway(name)
   }
