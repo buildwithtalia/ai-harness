@@ -3,14 +3,14 @@ import { gateway } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { z } from "zod"
-import { isModelConfigured, openaiApiKey } from "../models"
+import { anthropicApiKey, isModelConfigured, openaiApiKey } from "../models"
 import type { Scorer } from "../types"
 
 /**
  * The LLM judge picks a model based on what env is configured:
  *   1. Explicit `opts.judgeModel` or suite-level `judgeModel` — routed to
  *      the matching direct provider if set, else via the gateway.
- *   2. Else prefer Anthropic direct (CLAUDE_API_KEY) → claude-opus-4-7.
+ *   2. Else prefer Anthropic direct (ANTHROPIC_API_KEY) → claude-opus-4-7.
  *   3. Else AI_GATEWAY_API_KEY → anthropic/claude-opus-4-7 via gateway.
  *   4. Else OPENAI_API_KEY → gpt-5 via OpenAI direct.
  *   5. Else return null so the runner skips the judge — deterministic
@@ -31,7 +31,7 @@ function pickJudgeModel(explicit?: string): Picked {
   if (explicit) {
     if (explicit.startsWith("anthropic/")) {
       const bare = explicit.slice("anthropic/".length)
-      if (process.env.CLAUDE_API_KEY) return { transport: "anthropic", model: bare }
+      if (anthropicApiKey()) return { transport: "anthropic", model: bare }
       if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: explicit }
     } else if (explicit.startsWith("openai/")) {
       const bare = explicit.slice("openai/".length)
@@ -41,7 +41,7 @@ function pickJudgeModel(explicit?: string): Picked {
       return { transport: "gateway", model: explicit }
     }
   }
-  if (process.env.CLAUDE_API_KEY) return { transport: "anthropic", model: ANTHROPIC_DEFAULT }
+  if (anthropicApiKey()) return { transport: "anthropic", model: ANTHROPIC_DEFAULT }
   if (process.env.AI_GATEWAY_API_KEY) return { transport: "gateway", model: GATEWAY_DEFAULT }
   if (openaiApiKey()) return { transport: "openai", model: OPENAI_DEFAULT }
   return { transport: "none", model: "" }
@@ -122,7 +122,7 @@ export function llmJudge(opts?: { judgeModel?: string }): Scorer {
         picked.transport === "gateway"
           ? gateway(picked.model)
           : picked.transport === "anthropic"
-            ? createAnthropic({ apiKey: process.env.CLAUDE_API_KEY! })(picked.model)
+            ? createAnthropic({ apiKey: anthropicApiKey()! })(picked.model)
             : createOpenAI({ apiKey: openaiApiKey()! })(picked.model)
 
       const dimensionSchema = z

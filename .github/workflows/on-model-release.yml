@@ -44,7 +44,7 @@ jobs:
       AI_GATEWAY_API_KEY:       ${{ secrets.AI_GATEWAY_API_KEY }}
       # Direct provider keys — the harness prefers these and only falls back to
       # the gateway when one is unset (see src/core/providers.ts).
-      CLAUDE_API_KEY:       ${{ secrets.CLAUDE_API_KEY }}
+      ANTHROPIC_API_KEY:       ${{ secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_API_KEY }}
       OPENAI_API_KEY:       ${{ secrets.OPENAI_API_KEY || secrets.CODEX_API_KEY }}
       GOOGLE_API_KEY:       ${{ secrets.GOOGLE_API_KEY }}
       # Optional: real per-account rate limits. Unset falls back to the

@@ -215,7 +215,7 @@ Adding a row makes the model selectable in `/new`, callable via `--models=`, and
 
 | Family | First choice | Fallback |
 |---|---|---|
-| `anthropic/*` | `CLAUDE_API_KEY` via `@ai-sdk/anthropic` | `AI_GATEWAY_API_KEY` |
+| `anthropic/*` | `ANTHROPIC_API_KEY` via `@ai-sdk/anthropic` | `AI_GATEWAY_API_KEY` |
 | `openai/*` | `OPENAI_API_KEY` via `@ai-sdk/openai` | `AI_GATEWAY_API_KEY` |
 | `google/*` | `GOOGLE_API_KEY` via `@ai-sdk/google` | `AI_GATEWAY_API_KEY` |
 
@@ -985,7 +985,7 @@ Four GitHub Actions workflows live under `.github/workflows/`.
 
 | Variable | Needed for |
 |---|---|
-| `CLAUDE_API_KEY` | `anthropic/*` targets via the direct Anthropic API; also the default LLM judge |
+| `ANTHROPIC_API_KEY` | `anthropic/*` targets via the direct Anthropic API; also the default LLM judge. `CLAUDE_API_KEY` is the old name — still read, with a deprecation warning. |
 | `OPENAI_API_KEY` | `openai/*` targets via the direct OpenAI API. `CODEX_API_KEY` is the old name from the agent era — still read, with a deprecation warning. |
 | `GOOGLE_API_KEY` | `google/*` targets via the direct Google API ([aistudio.google.com/apikey](https://aistudio.google.com/apikey), free tier available) |
 | `AI_GATEWAY_API_KEY` | fallback transport for every family when its direct key is unset |

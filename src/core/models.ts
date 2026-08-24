@@ -188,6 +188,27 @@ export function limitGroupFor(id: string): ModelSpec["limits"] | undefined {
 }
 
 /**
+ * The Anthropic key, new name first.
+ *
+ * `CLAUDE_API_KEY` names the product; every other key here names the vendor,
+ * and the routing it feeds is keyed on the `anthropic/` family prefix. Both are
+ * read so an existing `.env.local` or CI secret keeps working.
+ */
+export function anthropicApiKey(): string | undefined {
+  const next = process.env.ANTHROPIC_API_KEY?.trim()
+  if (next) return next
+  const legacy = process.env.CLAUDE_API_KEY?.trim()
+  if (legacy && !warnedLegacyAnthropicKey) {
+    warnedLegacyAnthropicKey = true
+    console.warn(
+      "[env] CLAUDE_API_KEY is deprecated — rename it to ANTHROPIC_API_KEY. Still honoured for now.",
+    )
+  }
+  return legacy || undefined
+}
+let warnedLegacyAnthropicKey = false
+
+/**
  * The OpenAI key, new name first.
  *
  * `CODEX_API_KEY` is the old name, from when targets were agents and this key
@@ -212,7 +233,7 @@ let warnedLegacyOpenAiKey = false
 export function envCandidatesFor(id: string): string[] {
   switch (familyOf(id)) {
     case "anthropic":
-      return ["CLAUDE_API_KEY", "AI_GATEWAY_API_KEY"]
+      return ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY", "AI_GATEWAY_API_KEY"]
     case "openai":
       return ["OPENAI_API_KEY", "CODEX_API_KEY", "AI_GATEWAY_API_KEY"]
     case "google":

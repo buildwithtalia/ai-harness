@@ -2,7 +2,7 @@ import { gateway, wrapLanguageModel, type LanguageModel } from "ai"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
-import { familyOf, openaiApiKey, resolveModelId } from "./models"
+import { anthropicApiKey, familyOf, openaiApiKey, resolveModelId } from "./models"
 import type { ModelId } from "./types"
 import { limiterForModel } from "./rate-limit"
 
@@ -12,7 +12,7 @@ import { limiterForModel } from "./rate-limit"
  * Routing prefers a direct provider key when one is set, falling back to the
  * AI Gateway:
  *
- *   anthropic/*  → CLAUDE_API_KEY (direct)  → AI_GATEWAY_API_KEY
+ *   anthropic/*  → ANTHROPIC_API_KEY (direct) → AI_GATEWAY_API_KEY
  *   openai/*     → OPENAI_API_KEY (direct)  → AI_GATEWAY_API_KEY
  *   everything else                          → AI_GATEWAY_API_KEY
  *
@@ -38,7 +38,7 @@ export function resolveTransport(modelId: ModelId): ResolvedModel {
   const callId = resolveModelId(modelId)
   const bare = callId.includes("/") ? callId.slice(callId.indexOf("/") + 1) : callId
 
-  if (family === "anthropic" && process.env.CLAUDE_API_KEY) {
+  if (family === "anthropic" && anthropicApiKey()) {
     return { transport: "anthropic", name: bare }
   }
   if (family === "openai" && openaiApiKey()) {
@@ -71,7 +71,7 @@ function rawModel(modelId: ModelId): Exclude<LanguageModel, string> {
   const { transport, name } = resolveTransport(modelId)
   switch (transport) {
     case "anthropic":
-      return createAnthropic({ apiKey: process.env.CLAUDE_API_KEY! })(name)
+      return createAnthropic({ apiKey: anthropicApiKey()! })(name)
     case "openai":
       return createOpenAI({ apiKey: openaiApiKey()! })(name)
     case "google":
