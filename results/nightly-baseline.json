@@ -1,6 +1,6 @@
 {
-  "runId": "2026-08-23T07-14-07-023Z__model-benchmark",
-  "finishedAt": "2026-08-23T07:14:32.771Z",
+  "runId": "2026-08-24T07-24-08-840Z__model-benchmark",
+  "finishedAt": "2026-08-24T07:24:34.412Z",
   "meanPassRate": 0,
   "perModelPassRate": {
     "anthropic/claude-opus-4-7": 0,
