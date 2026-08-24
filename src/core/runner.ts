@@ -7,7 +7,8 @@ import {
 import { getModel } from "./providers"
 import { estimateCostUsd } from "./cost"
 import { ensureIngested, getProvider, listProviders } from "./context-providers"
-import { parseTargetId } from "./target"
+import { baselineOf, parseTargetId } from "./target"
+import { familyOf } from "./models"
 import { buildPairs, pairedStats } from "./stats"
 import { batchJudge } from "./scorers/batch-judge"
 import { pickIndependentJudge } from "./scorers/judge"
@@ -763,10 +764,23 @@ async function executeRun(
   let budgetStopped = false
   const judgeNotes: string[] = []
 
-  // Circuit breaker. One exhausted-quota or bad-credential response means every
-  // remaining cell will fail the same way; running them wastes wall clock and
-  // fills the matrix with noise that looks like model failure.
-  let fatalError: { message: string } | null = null as { message: string } | null
+  // Circuit breaker, scoped PER PROVIDER FAMILY.
+  //
+  // One exhausted-quota or bad-credential response means every remaining cell
+  // *for that provider* will fail the same way; running them wastes wall clock
+  // and fills the matrix with noise that looks like model failure.
+  //
+  // It must not be run-global. An Anthropic quota says nothing about OpenAI, and
+  // when it was global a two-provider run died after four Anthropic cells
+  // without ever dispatching a single OpenAI one — the working half of the
+  // matrix was thrown away because the other half was out of credit. A target
+  // whose family can't be determined is keyed under "unknown", which trips only
+  // its own kind.
+  const deadFamilies = new Map<string, { message: string }>()
+  const familyKey = (m: ModelId) => familyOf(baselineOf(m)) ?? "unknown"
+  /** The run is only truly over when every family in it has tripped. */
+  const allFamiliesDead = () =>
+    [...new Set(cells.map((c) => familyKey(c.model)))].every((f) => deadFamilies.has(f))
 
   // Tracks cells currently in flight so the heartbeat tick can refresh their
   // elapsed time without each cell owning its own timer.
@@ -795,7 +809,7 @@ async function executeRun(
       opts.onProgress?.({ type: "case-skipped", model, caseId: ec.id, epoch })
       return
     }
-    if (fatalError) return
+    if (deadFamilies.has(familyKey(model))) return
     if (opts.budgetUsd != null && spentUsd >= opts.budgetUsd) {
       if (!budgetStopped) {
         budgetStopped = true
@@ -831,10 +845,12 @@ async function executeRun(
       opts.onProgress?.({ type: "case-done", result: cr })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      if (isFatalProviderError(err) && !fatalError) {
-        fatalError = { message }
+      const fam = familyKey(model)
+      if (isFatalProviderError(err) && !deadFamilies.has(fam)) {
+        deadFamilies.set(fam, { message })
         console.error(
-          `[fatal] provider refused the request and will keep refusing — stopping the run.\n` +
+          `[fatal] ${fam} refused the request and will keep refusing — skipping its remaining ` +
+            `cells.${allFamiliesDead() ? " No provider is left; the run stops here." : " Other providers continue."}\n` +
             `        ${message.slice(0, 300)}`,
         )
       }
@@ -868,9 +884,11 @@ async function executeRun(
     // Phase 2: batched, anonymised judging across the arms of each case.
     const allResults = models.flatMap((m) => perModelResults[m])
     const anySucceeded = allResults.some((r) => !r.error)
-    if (!anySucceeded && allResults.length) {
-      judgeNotes.push("skipped — no cell produced an answer to judge")
-    }
+    // Return early rather than passing `judgeModel: undefined` through to
+    // judgePhase. Doing the latter tripped its "no judge model configured"
+    // branch, so a run whose cells had all errored reported two contradictory
+    // reasons at once — the true one and a false one claiming the suite has no
+    // judge, which sends you looking for a config problem that isn't there.
     const judgePick = anySucceeded
       ? pickIndependentJudge(suite.judgeModel, models)
       : { judgeModel: undefined as string | undefined, warning: undefined }
@@ -878,10 +896,15 @@ async function executeRun(
       judgeNotes.push(judgePick.warning)
       console.warn(`[judge] ${judgePick.warning}`)
     }
-    await judgePhase(suite, allResults, judgePick.judgeModel, concurrency, (m) => {
-      judgeNotes.push(m)
-      console.log(`[judge] ${m}`)
-    })
+    if (!anySucceeded && allResults.length) {
+      judgeNotes.push("skipped — no cell produced an answer to judge")
+      console.log("[judge] skipped — no cell produced an answer to judge")
+    } else {
+      await judgePhase(suite, allResults, judgePick.judgeModel, concurrency, (m) => {
+        judgeNotes.push(m)
+        console.log(`[judge] ${m}`)
+      })
+    }
     // Scores changed after the streaming append, so the file is rewritten.
     await rewriteCases(id, allResults)
 
@@ -912,8 +935,12 @@ async function executeRun(
         ),
       },
       ...errorSummary(allResults),
-      abortedReason: fatalError
-        ? `provider refused the request and would refuse the rest: ${fatalError.message.slice(0, 300)}`
+      // Name the providers that died. "the run aborted" hid which half of the
+      // matrix is missing and which half is a real result.
+      abortedReason: deadFamilies.size
+        ? `${[...deadFamilies.keys()].join(", ")} refused and would refuse the rest, so ` +
+          `${allFamiliesDead() ? "the run stopped" : "their cells were skipped; other providers completed"}: ` +
+          `${[...deadFamilies.values()][0].message.slice(0, 300)}`
         : undefined,
       judgeModel: judgePick.judgeModel,
       judgeNotes,
