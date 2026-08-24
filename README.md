@@ -335,6 +335,25 @@ Case ids are `<category>-<NN>-<subtask>-<fixture>` (e.g. `build-01-add-field-to-
 
 This is the only prompt in the suite that the [Context Graph Benchmarking report](#the-report-value-map) found the graph meaningfully helps with, and the only one that runs against an **estate** rather than a single repo.
 
+### Cross-repo estates on real OSS code
+
+Two of the four accuracy-graded cells now sit on **real open-source repositories**, not the synthetic healthcare fixture. That matters: a result measured only on data we generated invites the obvious objection, and until now every answer key had that problem.
+
+| Estate | Target | Repos | Direct | Indirect | Size |
+|---|---|---|---|---|---|
+| `mattermost-xrepo` | `rotator` | 17 | 2 | 6 | ~88 MB |
+| `grafana-xrepo` | `sqlds` | 19 | 6 | 4 | ~206 MB |
+
+Derived by `scripts/derive-oss-estate.mts` from declared dependency manifests, which meet the same four tests that made `registry.yaml` usable — declared not inferred, independent of the question, pinned, closed-world. Nothing here is a graph the harness built.
+
+**The key is the transitive set, and only the indirect half is graded.** Direct dependents name the target in their own `go.mod`, so one grep across the estate finds all of them — that is exactly how a model scored 100% recall on the first healthcare cross-repo prompt without doing any work. Indirect dependents never name the target: they depend on something that does, so recovering them means assembling the graph from manifests scattered across the estate. Verified to discriminate — a grep-only answer scores **direct 1.00, indirect 0.00** and fails the gate; the full transitive answer scores 1.00.
+
+`getsentry` is deliberately absent. Its 111 internal dependents are all direct with no multi-hop chains, so it cannot pose this question at all.
+
+These estates are **not** a surface for the 12 single-repo prompts — they exist for one question and have no meaningful `dbColumn` or `traceField`, so fanning `find-03` onto them would ask a model to trace `n/a`.
+
+> **Not pinned.** Unlike every other fixture, OSS estate members are cloned at branch HEAD; pinning needs a resolved SHA per member and there are 36. Two runs a week apart may not grade identical trees.
+
 ### Estates
 
 An estate is several repos checked out side by side under one parent directory, so tool paths are repo-qualified (`healthcare-vitals/src/client.py`) and a question can span the tree.

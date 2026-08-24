@@ -249,7 +249,7 @@ export function assertFullCoverage(subtasks: string[]): void {
   // Estate cases declare their checks inline (they need the estate id, which
   // isn't known to this table), so they're exempt.
   const missing = subtasks
-    .filter((s) => s !== "cross-repo-blast-radius")
+    .filter((s) => s !== "cross-repo-blast-radius" && s !== "cross-repo-transitive-impact")
     .filter((s) => !GROUND_TRUTH_BY_SUBTASK[s])
   if (missing.length) {
     throw new Error(

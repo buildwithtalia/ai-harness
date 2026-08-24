@@ -1,6 +1,7 @@
 import { extractCitations } from "@/core/scorers/repo-facts"
 import { scoreSetAnswer } from "@/core/scorers/set-answer"
 import { answerKeyFor, TOP_DEPENDED_SERVICES } from "./answer-keys"
+import ossEstates from "./oss-estates.json"
 import { gitApplyCheck, resolveInside } from "@/core/workspace"
 import { promises as fs } from "node:fs"
 import type { GroundTruthCheck } from "@/core/types"
@@ -290,6 +291,54 @@ export function namesTopDependedServices(minRecall = 0.6): GroundTruthCheck {
           expected: TOP_DEPENDED_SERVICES,
           minRecall,
           unit: "services (the registry declares no endpoints)",
+        },
+      }
+    },
+  }
+}
+
+/**
+ * Repos affected by a change to an OSS estate's target module.
+ *
+ * Scored on the two halves separately, because they are not the same task.
+ * `direct` dependents name the target in their own manifest — one grep across
+ * the estate finds every one of them, which is exactly how a model scored 100%
+ * recall on the first healthcare cross-repo prompt without doing any work.
+ * `indirect` dependents never name it: they depend on something that depends on
+ * it, so recovering them means building the dependency graph from manifests
+ * spread across the estate. That is knowledge held in no single repository,
+ * which is the condition the July 2026 report found a context graph wins under.
+ *
+ * The gate is on indirect recall alone. Passing on direct recall would let a
+ * grep score full marks, and measuring the two together would let a good direct
+ * score hide a total failure on the half that discriminates.
+ */
+export function crossRepoDependents(estateId: string, minIndirectRecall = 0.5): GroundTruthCheck {
+  const e = ossEstates.estates.find((x) => x.id === estateId)
+  return {
+    type: "custom",
+    name: `finds ≥${Math.round(minIndirectRecall * 100)}% of the INDIRECT dependents (not greppable)`,
+    check: async (output) => {
+      if (!e) return { pass: false, details: { reason: `no OSS estate '${estateId}'` } }
+      const claimed = e.members.filter(
+        (m) => scoreSetAnswer(output.text, { expected: [m] }).recall === 1,
+      )
+      const direct = scoreSetAnswer(output.text, { expected: e.direct })
+      const indirect = scoreSetAnswer(output.text, { expected: e.indirect })
+      const spurious = claimed.filter((m) => e.distractors.includes(m))
+      return {
+        pass: indirect.recall >= minIndirectRecall,
+        details: {
+          target: e.target,
+          estateSize: e.members.length,
+          // The number that matters. Direct is reported for contrast: a large
+          // gap between the two is the signature of a grep-only strategy.
+          indirectRecall: indirect.recall,
+          directRecall: direct.recall,
+          indirectFound: indirect.found,
+          indirectMissed: indirect.missed,
+          falsePositives: spurious,
+          minIndirectRecall,
         },
       }
     },

@@ -1,0 +1,105 @@
+{
+  "note": "Cross-repo estates on REAL open-source code, derived from declared dependency manifests. `direct` dependents name the target in their own manifest and are one grep away; `indirect` ones never name it, so recovering them requires building the graph \u2014 that is the discriminating half of the key. getsentry is absent on purpose: its 111 internal dependents are all direct, with no multi-hop chains, so it cannot pose this question.",
+  "estates": [
+    {
+      "id": "max",
+      "label": "mattermost-xrepo",
+      "org": "mattermost",
+      "target": "rotator",
+      "members": [
+        "rotator",
+        "mattermost-cloud",
+        "rotatorctl",
+        "mattermost-plugin-cloud",
+        "matterwick",
+        "pillar",
+        "awat",
+        "elrond",
+        "mattermost-cloudnative-bootstrapper",
+        "mattermost-push-proxy",
+        "mattermost-mattermod",
+        "mattermost-plugin-jira",
+        "mattermost-plugin-zoom",
+        "mattermost-plugin-github",
+        "mattermost-plugin-ms-teams-playbooks-watcher",
+        "mattermost-plugin-community",
+        "mattermost-plugin-nps"
+      ],
+      "direct": [
+        "mattermost-cloud",
+        "rotatorctl"
+      ],
+      "indirect": [
+        "mattermost-plugin-cloud",
+        "matterwick",
+        "pillar",
+        "awat",
+        "elrond",
+        "mattermost-cloudnative-bootstrapper"
+      ],
+      "distractors": [
+        "mattermost-push-proxy",
+        "mattermost-mattermod",
+        "mattermost-plugin-jira",
+        "mattermost-plugin-zoom",
+        "mattermost-plugin-github",
+        "mattermost-plugin-ms-teams-playbooks-watcher",
+        "mattermost-plugin-community",
+        "mattermost-plugin-nps"
+      ],
+      "approxMb": 88
+    },
+    {
+      "id": "grx",
+      "label": "grafana-xrepo",
+      "org": "grafana",
+      "target": "sqlds",
+      "members": [
+        "sqlds",
+        "grafana-aws-sdk",
+        "redshift-datasource",
+        "athena-datasource",
+        "clickhouse-datasource",
+        "astradb-datasource",
+        "yugabyte-datasource",
+        "grafana-infinity-datasource",
+        "grafana-amazonprometheus-datasource",
+        "grafana-cloudwatch-datasource",
+        "grafana-elasticsearch-datasource",
+        "carbon-relay-ng",
+        "memo",
+        "terraform-provider-grafana",
+        "grafana-plugin-sdk-go",
+        "kubernetes-diff-logger",
+        "synthetic-monitoring-app",
+        "synthetic-monitoring-agent",
+        "go-rsmq"
+      ],
+      "direct": [
+        "grafana-aws-sdk",
+        "redshift-datasource",
+        "athena-datasource",
+        "clickhouse-datasource",
+        "astradb-datasource",
+        "yugabyte-datasource"
+      ],
+      "indirect": [
+        "grafana-infinity-datasource",
+        "grafana-amazonprometheus-datasource",
+        "grafana-cloudwatch-datasource",
+        "grafana-elasticsearch-datasource"
+      ],
+      "distractors": [
+        "carbon-relay-ng",
+        "memo",
+        "terraform-provider-grafana",
+        "grafana-plugin-sdk-go",
+        "kubernetes-diff-logger",
+        "synthetic-monitoring-app",
+        "synthetic-monitoring-agent",
+        "go-rsmq"
+      ],
+      "approxMb": 206
+    }
+  ]
+}

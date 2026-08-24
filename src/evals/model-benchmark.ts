@@ -1,10 +1,12 @@
 import { deterministic } from "@/core/scorers/deterministic"
-import { FIXTURES, listEstates, type FixtureEntities } from "./fixtures"
+import { ESTATES, FIXTURES, listEstates, OSS_ESTATES, type FixtureEntities } from "./fixtures"
+import ossEstatesJson from "./oss-estates.json"
 import { answerKeyFor } from "./answer-keys"
 import {
   citesRealFiles,
   crossRepoCallers,
   fewInventedPaths,
+  crossRepoDependents,
   namesTopDependedServices,
 } from "./checks"
 import { repoGrounding } from "@/core/scorers/repo-grounding"
@@ -288,7 +290,13 @@ const SURFACES = [
     entities: f.entities ?? GENERIC_ENTITIES,
     context: { repoUrl: f.repoUrl },
   })),
-  ...listEstates().map((e) => ({
+  // ESTATES, not listEstates(): the OSS cross-repo estates are deliberately
+  // NOT a surface for the 12 single-repo prompts. They exist to answer one
+  // question — transitive dependency impact — and have no meaningful
+  // `dbColumn` or `traceField`, so fanning `find-03` onto them would ask a
+  // model to trace `n/a`. That is precisely the naming-a-nonexistent-entity
+  // failure this file was just fixed for.
+  ...ESTATES.map((e) => ({
     id: e.id,
     label: e.label,
     ref: e.ref,
@@ -386,7 +394,49 @@ const AB_MODELS = [
  * ~99%. If that trend is real, the 39-repo arm should show a wider gap than the
  * 13-repo one.
  */
-const estateCases: EvalCase[] = listEstates().map((estate) => {
+/**
+ * Cross-repo cases on real OSS code, one per derived estate.
+ *
+ * Asks for the transitive impact set, not the declared one. "Who lists this in
+ * their manifest" is a single grep across the estate; "who breaks when it
+ * changes" additionally requires the repos that depend on those repos, and
+ * their manifests never mention the target.
+ */
+const ossEstateCases: EvalCase[] = OSS_ESTATES.map((estate) => {
+  const spec = ossEstatesJson.estates.find((e) => e.id === estate.id)!
+  return {
+    id: `xrepo-02-transitive-impact-${estate.id}`,
+    difficulty: "hard" as const,
+    capabilityAxis: ["impact_analysis", "discovery", "multistep"],
+    metadata: {
+      category: "find",
+      baseId: "xrepo-02-transitive-impact",
+      subtask: "cross-repo-transitive-impact",
+      bucket: "cross-repo-blast-radius",
+      estate: estate.id,
+      fixture: estate.label,
+      estateSize: estate.repos.length,
+      accuracyGraded: true,
+    },
+    ticket:
+      `Ticket #6120. We are making a breaking change to \`${spec.target}\` — a function ` +
+      "signature everything downstream compiles against.\n\nBefore it ships we need to know " +
+      "which repositories in this estate stop building.",
+    input:
+      `List every repository here that would be affected by a breaking change to ` +
+      `\`${spec.target}\`, and for each give a \`path/to/file:line\` proving the link.\n\n` +
+      "Affected does NOT mean only the repos that name it in their own dependency manifest. " +
+      "A repo that depends on one of THOSE repos also breaks, and its manifest will not " +
+      "mention the target at all — you have to follow the chain. Report the direct and " +
+      "indirect sets separately. Do not list repositories you cannot evidence.",
+    groundTruth: {
+      checks: [crossRepoDependents(estate.id, 0.5), citesRealFiles(3), fewInventedPaths(0.2)],
+    },
+    context: { text: `Estate: ${estate.displayName}. ${estate.description}` },
+  }
+})
+
+const estateCases: EvalCase[] = ESTATES.map((estate) => {
   const ak = answerKeyFor(estate.id)!
   return {
     id: `xrepo-01-blast-radius-${estate.id}`,
@@ -485,7 +535,7 @@ const suite: EvalSuite = {
   // (target, case) gives the paired statistics something to work with; raise
   // for a headline result, drop to 1 for a smoke run.
   epochs: 3,
-  cases: [...cases, ...estateCases],
+  cases: [...cases, ...estateCases, ...ossEstateCases],
 }
 
 export default suite

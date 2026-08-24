@@ -1,4 +1,5 @@
 import { ANSWER_KEYS } from "./answer-keys"
+import ossEstates from "./oss-estates.json"
 
 /**
  * Fixture repos every base prompt is fanned across.
@@ -231,8 +232,45 @@ export const ESTATES: readonly Estate[] = ANSWER_KEYS.map((k) => ({
     "questions span the whole tree rather than one checkout.",
 })) as readonly Estate[]
 
+/**
+ * Cross-repo estates on real open-source code.
+ *
+ * Every accuracy-graded cell used to sit on healthcare-org-app, a synthetic
+ * fixture generated from one template — so any result invited the objection
+ * that the graph won on data we authored. These are the same question asked of
+ * real repositories, with the answer key taken from declared dependency
+ * manifests rather than anything the harness inferred.
+ *
+ * Cloned at branch HEAD rather than a pinned SHA, unlike every other fixture
+ * here. Pinning would need a resolved SHA per member and there are 36 of them;
+ * until that is generated, two runs a week apart may not grade identical trees.
+ * Recorded rather than hidden — see README, Known limitations.
+ */
+export const OSS_ESTATES: readonly Estate[] = ossEstates.estates.map((e) => ({
+  id: e.id,
+  label: e.label,
+  displayName: `${e.org} (${e.members.length} repos, cross-repo)`,
+  org: e.org,
+  repos: e.members,
+  ref: "main",
+  depth: 1,
+  contamination: "public-likely-memorised" as const,
+  entities: {
+    dbColumn: "n/a",
+    traceField: "n/a",
+    coreArea: e.target,
+    hasOpenApiSpec: false,
+    hasPostmanCollection: false,
+  },
+  description:
+    `${e.members.length} sibling repositories from the ${e.org} org. ` +
+    `${e.direct.length} declare a dependency on ${e.target} in their own manifest; ` +
+    `${e.indirect.length} more depend on it only transitively and never name it; ` +
+    `${e.distractors.length} do not depend on it at all.`,
+})) as readonly Estate[]
+
 export function listEstates(): readonly Estate[] {
-  return ESTATES
+  return [...ESTATES, ...OSS_ESTATES]
 }
 
 export function getEstate(labelOrId: string): Estate | undefined {
