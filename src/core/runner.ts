@@ -113,6 +113,26 @@ function isTransient(err: unknown): boolean {
   )
 }
 
+/**
+ * How long the provider asked us to wait, in ms, if it said.
+ *
+ * Covers Google's prose form and the `Retry-After` header both vendors may
+ * send. Capped so a malformed or hostile value can't park a cell for an hour;
+ * beyond the cap the caller's exponential backoff is the better bet anyway.
+ */
+const MAX_RETRY_AFTER_MS = 90_000
+function retryAfterMs(err: unknown): number | null {
+  const msg = err instanceof Error ? err.message : String(err)
+  const prose = /retry in\s+([\d.]+)\s*s/i.exec(msg)
+  const header = /retry-after["\s:]+([\d.]+)/i.exec(msg)
+  const raw = prose?.[1] ?? header?.[1]
+  if (!raw) return null
+  const seconds = Number(raw)
+  if (!Number.isFinite(seconds) || seconds <= 0) return null
+  // A second of slack: retrying at the exact boundary tends to race the reset.
+  return Math.min(MAX_RETRY_AFTER_MS, Math.ceil(seconds * 1000) + 1_000)
+}
+
 async function withRetry<T>(
   label: string,
   fn: () => Promise<T>,
@@ -126,9 +146,13 @@ async function withRetry<T>(
       lastErr = err
       if (attempt === MAX_ATTEMPTS || !isTransient(err)) throw err
       onRetry?.(attempt, err)
-      // Exponential backoff with jitter, so retries from concurrent cells
-      // don't resynchronise into another burst against the same limit.
-      const delay = RETRY_BASE_MS * 2 ** (attempt - 1) * (0.5 + Math.random())
+      // Prefer the provider's own instruction over our guess.
+      //
+      // Google answers a quota rejection with "Please retry in 38.762423132s".
+      // Blind exponential backoff waited 2s, 4s, 8s and gave up inside the same
+      // window it had been told to wait out — three requests spent to fail in
+      // the one way the provider had already explained how to avoid.
+      const delay = retryAfterMs(err) ?? RETRY_BASE_MS * 2 ** (attempt - 1) * (0.5 + Math.random())
       console.warn(
         `[retry ${attempt}/${MAX_ATTEMPTS - 1}] ${label}: ${
           lastErr instanceof Error ? lastErr.message.slice(0, 120) : String(lastErr).slice(0, 120)

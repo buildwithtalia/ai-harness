@@ -150,9 +150,11 @@ Two buckets per provider, both continuously refilling over a 60s window rather t
 | `<PROVIDER>_RPM` / `<PROVIDER>_TPM` env | provider-wide **ceiling** |
 | `ModelSpec.limits` in the catalog | per-group figure; effective limit is the lower of the two |
 | Built-in lowest-tier defaults | used when no env value is set |
-| Provider response headers, and the `limit: N` in a 429 body | tighten at runtime, **never widen** |
+| Provider response headers, and a **per-minute** `limit: N` in a 429 body | tighten at runtime, **never widen** |
 
 Defaults: `anthropic` 50 RPM / 30k TPM, `openai` 500 / 30k, `google` 5 / 250k.
+
+> **Per-day quotas are a different problem and this cannot solve them.** Gemini's free tier caps `gemini-3.7-flash` at **20 requests per day** (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`), and one cell of this suite makes up to 40 requests — so a single cell cannot complete at any speed. The 429 says only `limit: 20` with no window, which an earlier version of the limiter read as 20 RPM and paced 1200× too fast against. A figure is now applied only when the message explicitly says per-minute; anything else is reported and ignored, because slowing requests down cannot satisfy a cap on how many you get.
 
 So `OPENAI_TPM=100000` throttles every OpenAI model to 100K even where the vendor allows 500K, while the catalog can only tighten from there — one knob to slow everything down, and per-model accuracy underneath it.
 

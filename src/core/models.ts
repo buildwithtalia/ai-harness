@@ -134,8 +134,23 @@ export const MODELS: ModelSpec[] = [
   // Left unpriced deliberately — published 3.x rates aren't confirmed here, and
   // an invented rate is worse than a visible "unpriced" tag, which the run form
   // shows and the cost estimator excludes.
-  { id: "google/gemini-3.7-flash", displayName: "Gemini 3.7 Flash", family: "google" },
-  { id: "google/gemini-3.6-flash", displayName: "Gemini 3.6 Flash", family: "google" },
+  {
+    id: "google/gemini-3.7-flash",
+    displayName: "Gemini 3.7 Flash",
+    family: "google",
+    // NOTE: the free tier caps this at 20 requests per DAY
+    // (GenerateRequestsPerDayPerProjectPerModel-FreeTier), which no per-minute
+    // limit can express — and one cell of this suite makes up to 40 requests,
+    // so a single cell cannot complete on the free tier at any speed. The
+    // per-minute allowance is not published in the refusal, so none is claimed
+    // here and the provider-wide bucket applies.
+  },
+  {
+    id: "google/gemini-3.6-flash",
+    displayName: "Gemini 3.6 Flash",
+    family: "google",
+    // Free tier: 5 requests per DAY. See the note on 3.7-flash.
+  },
   { id: "google/gemini-3.5-flash", displayName: "Gemini 3.5 Flash", family: "google" },
   { id: "google/gemini-3.1-pro-preview", displayName: "Gemini 3.1 Pro", family: "google" },
 ]

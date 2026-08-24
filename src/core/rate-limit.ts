@@ -129,6 +129,7 @@ class ProviderLimiter {
   /** Serialises admission so two callers can't both see room for the last slot. */
   private queue: Promise<void> = Promise.resolve()
   private observed = false
+  private warnedNonMinute = false
 
   constructor(
     readonly provider: string,
@@ -201,33 +202,48 @@ class ProviderLimiter {
   }
 
   /**
-   * Tighten from a rejection body.
+   * Tighten from a rejection body — but only when the number is a per-minute
+   * one.
    *
-   * Google does not send rate-limit headers, but its 429 says exactly what the
-   * ceiling is:
+   * Google's 429 reads "Quota exceeded for metric:
+   * ...generate_content_free_tier_requests, limit: 20" and says nothing in the
+   * message about the window. An earlier version read that as 20 RPM. It is
+   * 20 requests per DAY — the structured detail names the quota
+   * `GenerateRequestsPerDayPerProjectPerModel-FreeTier` — so the limiter was
+   * writing a daily allowance into a per-minute bucket and pacing 1200x too
+   * fast while believing it was being careful.
    *
-   *   Quota exceeded for metric: ...generate_content_free_tier_requests,
-   *   limit: 5, model: gemini-3.6-flash
-   *
-   * That is the only place the real number appears — the response headers on a
-   * SUCCESSFUL call report `x-gemini-service-tier: standard` and no figures at
-   * all, which reads as a paid tier while the quota being enforced is the free
-   * one. Parsing the refusal is the difference between discovering the limit
-   * and guessing it.
-   *
-   * Same one-way rule as headers: this can only narrow.
+   * A per-minute figure is now required explicitly. Anything else is reported
+   * and ignored, because throttling requests-per-minute cannot fix a
+   * requests-per-day cap: the run needs fewer requests, not slower ones.
    */
   observeError(err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     const m = /limit:\s*(\d+)/i.exec(msg)
     if (!m) return
     const n = Number(m[1])
-    if (!Number.isFinite(n) || n <= 0 || n >= this.limits.rpm) return
+    if (!Number.isFinite(n) || n <= 0) return
+
+    const perDay = /per\s*-?\s*day|requests_per_day|PerDay/i.test(msg)
+    const perMinute = /per\s*-?\s*minute|requests_per_minute|PerMinute|\/min\b/i.test(msg)
+
+    if (perDay || !perMinute) {
+      if (!this.warnedNonMinute) {
+        this.warnedNonMinute = true
+        console.warn(
+          `[ratelimit] ${this.provider}: refused with "limit: ${n}", which is not a per-minute ` +
+            `quota${perDay ? " (it is per-day)" : " (window unspecified)"}. Not applied — rate ` +
+            `limiting cannot satisfy a per-day cap. Reduce requests instead: fewer cells, fewer ` +
+            `epochs, or a lower maxSteps.`,
+        )
+      }
+      return
+    }
+    if (n >= this.limits.rpm) return
     this.limits = { ...this.limits, rpm: n }
     this.requests.setRate(n, n)
     console.warn(
-      `[ratelimit] ${this.provider}: provider refused and reported limit ${n} — ` +
-        `tightening to ${n} RPM. Set ${this.provider.toUpperCase()}_RPM to avoid rediscovering this.`,
+      `[ratelimit] ${this.provider}: provider reported a per-minute limit of ${n} — tightening.`,
     )
   }
 
