@@ -422,13 +422,15 @@ const ossEstateCases: EvalCase[] = OSS_ESTATES.map((estate) => {
       `Ticket #6120. We are making a breaking change to \`${spec.target}\` — a function ` +
       "signature everything downstream compiles against.\n\nBefore it ships we need to know " +
       "which repositories in this estate stop building.",
+    // States the task and what counts as success. Says nothing about how many
+    // repositories are affected, how the dependency is recorded, or that a
+    // chain has to be followed — an earlier version said all three, which is
+    // the knowledge a context graph is meant to provide.
     input:
-      `List every repository here that would be affected by a breaking change to ` +
-      `\`${spec.target}\`, and for each give a \`path/to/file:line\` proving the link.\n\n` +
-      "Affected does NOT mean only the repos that name it in their own dependency manifest. " +
-      "A repo that depends on one of THOSE repos also breaks, and its manifest will not " +
-      "mention the target at all — you have to follow the chain. Report the direct and " +
-      "indirect sets separately. Do not list repositories you cannot evidence.",
+      `List every repository in this estate that would stop building if \`${spec.target}\` ` +
+      "made a breaking change, and give a `path/to/file:line` proving each one.\n\n" +
+      "Completeness is what matters — a repository you miss is a broken build nobody expected. " +
+      "Do not list a repository you cannot evidence.",
     groundTruth: {
       checks: [crossRepoDependents(estate.id, 0.5), citesRealFiles(3), fewInventedPaths(0.2)],
     },
@@ -465,9 +467,7 @@ const estateCases: EvalCase[] = ESTATES.map((estate) => {
       `Identify every service in this estate that calls \`${ak.target}\`. For each one, give ` +
       "the repository name and a `path/to/file:line` reference proving the dependency. Be " +
       "exhaustive — a missed caller is a production outage — but do not list services you " +
-      "cannot evidence, since a false positive costs an engineer a wasted investigation.\n\n" +
-      "Note that a service declares only its OWN outbound dependencies, in its own repository. " +
-      "There is no central manifest in this estate.",
+      "cannot evidence, since a false positive costs an engineer a wasted investigation.",
     // Recall gates; precision is measured alongside because the report tracks
     // both (the graph invented zero services; grep hallucinates at scale).
     groundTruth: {

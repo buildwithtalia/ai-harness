@@ -225,11 +225,9 @@ export const ESTATES: readonly Estate[] = ANSWER_KEYS.map((k) => ({
     hasOpenApiSpec: true,
     hasPostmanCollection: true,
   },
-  description:
-    `The entire healthcare-org-app estate — all ${k.members.length} repos, checked out side by ` +
-    `side. ${k.key.expected.length} services declare an outbound dependency on ${k.target}. ` +
-    "Each service declares only its own http_deps in its own service.yaml, so cross-repo " +
-    "questions span the whole tree rather than one checkout.",
+  // No caller count and no filename. Both were here; either alone is most of
+  // the answer.
+  description: `The entire ${"healthcare-org-app"} estate — all ${k.members.length} repos, checked out side by side.`,
 })) as readonly Estate[]
 
 /**
@@ -262,11 +260,11 @@ export const OSS_ESTATES: readonly Estate[] = ossEstates.estates.map((e) => ({
     hasOpenApiSpec: false,
     hasPostmanCollection: false,
   },
-  description:
-    `${e.members.length} sibling repositories from the ${e.org} org. ` +
-    `${e.direct.length} declare a dependency on ${e.target} in their own manifest; ` +
-    `${e.indirect.length} more depend on it only transitively and never name it; ` +
-    `${e.distractors.length} do not depend on it at all.`,
+  // Deliberately says nothing about how many repos are affected, how they are
+  // linked, or which files record the link. Those were all in here, which
+  // handed the baseline the exact thing a context graph is supposed to supply
+  // and would have compressed any measured difference toward zero.
+  description: `${e.members.length} sibling repositories from the ${e.org} org.`,
 })) as readonly Estate[]
 
 export function listEstates(): readonly Estate[] {

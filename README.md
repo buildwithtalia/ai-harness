@@ -372,39 +372,29 @@ The answer key is generated, not hand-written — `pnpm tsx scripts/derive-answe
 
 > **Known leak.** `healthcare-infra` is a member, and its `registry.yaml` lists every dependency edge in the org in one file — so "who calls X" is one grep. Prior revisions excluded that repo to prevent exactly this, which made the numbers look better by hiding a file the customer actually has. See [Known limitations](#known-limitations).
 
-### The strengthened baseline
+### What a prompt may and may not say
 
-Cross-repo cases prepend a five-step search strategy (`STRENGTHENED_SEARCH_STRATEGY` in `src/core/runner.ts`) — enumerate repos, trace client wrappers, resolve dynamic paths, mine deploy config, confirm every hit — **to both arms**.
+A prompt states **the task and what counts as success**. It must not state **the method, the shape of the answer, or its size**. That line matters more here than in most harnesses, because the thing under test is knowledge — and any of that knowledge placed in the prompt is handed to the baseline for free, narrowing the gap being measured.
 
-This is not a nicety. The report measured a naive file-searching baseline at 4% recall on one task and the *same* baseline with this strategy at 53%: a 13× swing from prompt wording alone. Benchmarking a graph against the naive version attributes that entire gap to the graph and produces a number that evaporates the moment someone writes a better baseline prompt. The graph has to beat a baseline that is actually trying. Handing the strategy to only one arm would just relocate the confound, so `+cg` gets it too.
+The cross-repo prompts violated all three at once. They said how many repositories were affected (`37 services declare an outbound dependency`, `6 more depend on it only transitively`), which file recorded each dependency (`its own service.yaml`), and the traversal required (`you have to follow the chain`). That is a description of what a dependency graph knows, given to the control group before it starts. A null result would have read as "the graph adds nothing" when the honest reading was "we told the baseline how to be a graph".
 
-Cross-repo cells also get a **150-step tool budget** instead of the default 40, because the report's no-graph arm spent 90–133 tool calls per task. At 40 steps the baseline would be truncated mid-search and the graph would "win" on a budget artifact.
+`pnpm check:leaks` fails the build if a prompt names its own answer-set size or matches a known method hint. Scoped per case — a `2` in an auth prompt is a coincidence; a `2` in the prompt whose answer is two repositories is the answer.
 
-### Prompts name what the repo actually has
+### The search-strategy hint is a condition, not a default
 
-Every prompt used to hardcode one fictional SaaS domain. Measured against the fixtures:
+`STRENGTHENED_SEARCH_STRATEGY` — enumerate every repository, trace client wrappers, resolve dynamic paths, mine deployment config, confirm every hit — used to be injected unconditionally into every estate case, for both arms.
 
-| Entity the prompt named | Exists in |
-|---|---|
-| `payments-api` | **0 of 4** |
-| `orders.customer_id` | **0 of 4** |
-| `notification_email` | 2 of 4 |
-| a Postman collection | 1 of 4 |
+The intent was fair: the report measured a naive baseline at 4% recall and the same baseline given this strategy at 53%, so comparing a graph against the naive version overstates it by 13×. But always-on is the opposite error and a quieter one, because that list is essentially a description of what a graph knows.
 
-So three of twelve prompts asked models to trace, enumerate and rank things that are not there — and the grading rewarded them for it. Citation checks pay out for naming *any* real file, so the winning move was to invent an answer about a nonexistent entity and cite unrelated real code. Two anti-hedging checks made it worse by penalising "this does not exist here", which on those repos was the only correct answer available. **The harness was scoring confabulation.**
+It is now opt-in via `AI_HARNESS_SEARCH_STRATEGY=1` and recorded on the manifest as `searchStrategyHint`, so three arms can be compared honestly:
 
-Prompts are now templates over `Fixture.entities`, every value grepped out of the checkout it belongs to:
+| Arm | Coaching | Context Graph |
+|---|---|---|
+| baseline | none | no |
+| baseline + strategy | yes | no |
+| `+cg` | none | yes |
 
-| Surface | `dbColumn` | `traceField` | `coreArea` |
-|---|---|---|---|
-| grafana | `user.email` | `email` | the datasource proxy |
-| sentry | `auth_user.email` | `email` | event ingestion |
-| mattermost | `Users.Email` | `email` | the channels API |
-| healthcare | `vitals.patient_id` | `patient_id` | patients-service |
-
-Prompts also stop demanding artefacts a repo lacks — `three-way-drift` names the OpenAPI spec and Postman collection only where they exist, and says outright that reporting an absent artefact is a valid finding. `"no OpenAPI spec exists"` was removed from the anti-hedging needles: on mattermost it is simply true. That guard is now strictly about refusing to *look*, never about what was found.
-
-A surface that hasn't declared entities falls back to deliberately vague wording rather than a plausible guess — a wrong table name is the exact failure this mechanism exists to prevent.
+Default is uncoached. Asking the question is the measurement; coaching is a separate experiment, and burying it in the control made both unreadable.
 
 ### Ticket framing
 

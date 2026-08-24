@@ -272,6 +272,9 @@ export type RunManifest = {
   /** Planned but never attempted — the circuit breaker or the budget cap
    * stopped the run before reaching them. */
   cellsSkipped?: number
+  /** Whether the search-strategy hint was given to both arms. Recorded because
+   * it materially changes what a null result means. */
+  searchStrategyHint?: boolean
   /** The most common error, when any cell failed. */
   dominantError?: { message: string; count: number }
   /** Set when the run was cut short by an unrecoverable provider error

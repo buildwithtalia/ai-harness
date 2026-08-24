@@ -307,6 +307,30 @@ function staticContextBlock(ec: EvalCase): string | null {
  * Giving it to the +cg arm too is deliberate: a strategy note is not the thing
  * under test, and handing it to only one arm would just move the confound.
  */
+/**
+ * Is the search-strategy hint switched on? Off unless AI_HARNESS_SEARCH_STRATEGY=1.
+ *
+ * This used to be unconditional on every estate case, given to both arms. The
+ * intention was fair — the report measured a naive baseline at 4% recall and
+ * the same baseline with this strategy at 53%, so comparing a graph against the
+ * naive version overstates the graph by 13x.
+ *
+ * But always-on is the opposite error, and a quieter one. The strategy tells a
+ * model to enumerate every repository, trace wrappers, resolve dynamic paths
+ * and confirm each hit — which is a description of what a dependency graph
+ * knows. Handing that to the baseline for free narrows the very gap being
+ * measured, and because it was baked in, a null result would have looked like
+ * "the graph adds nothing" rather than "we told the baseline how to be a graph".
+ *
+ * It is now an explicit condition, recorded on the manifest, so the three arms
+ * can be compared honestly: uncoached baseline, coached baseline, and +cg. The
+ * default is uncoached, because asking the question is the measurement and
+ * coaching is a separate experiment.
+ */
+export function searchStrategyEnabled(): boolean {
+  return process.env.AI_HARNESS_SEARCH_STRATEGY === "1"
+}
+
 const STRENGTHENED_SEARCH_STRATEGY = [
   "Suggested strategy for exhaustive cross-repo search — a competent engineer would:",
   "1. Enumerate every repository first, so you know the search space before you start.",
@@ -338,12 +362,15 @@ function buildMessages(
   // actually reading — the behaviour the old, tool-less harness rewarded.
   const toolNote = ws
     ? (ws.isEstate
-        ? `You have ${ws.repos.length} sibling repositories checked out side by side and readable ` +
+        ? // Mechanics only: how many roots there are and how paths are shaped.
+          // This used to add "callers frequently live in a DIFFERENT repository
+          // ... searching only the defining repo will miss them", which is not
+          // orientation — it is the insight the question is testing for, handed
+          // over before the model starts.
+          `You have ${ws.repos.length} sibling repositories checked out side by side and readable ` +
           "with your tools. Every path is repo-qualified — the first segment is the repository " +
-          `name. \`list_dir\` with no path lists them: ${ws.repos.map((r) => r.name).join(", ")}. ` +
-          "Callers of a given endpoint frequently live in a DIFFERENT repository from the one that " +
-          "defines it, so searching only the defining repo will miss them. Search across all of them.\n\n" +
-          STRENGTHENED_SEARCH_STRATEGY
+          `name. \`list_dir\` with no path lists them: ${ws.repos.map((r) => r.name).join(", ")}.` +
+          (searchStrategyEnabled() ? `\n\n${STRENGTHENED_SEARCH_STRATEGY}` : "")
         : "The repository above is checked out and readable with your tools at commit " +
           `${(ws.sha ?? "").slice(0, 12)}.`) +
       " Investigate before answering: do not speculate about code you have not read. Cite concrete " +
@@ -1015,6 +1042,7 @@ async function executeRun(
           `${allFamiliesDead() ? "the run stopped" : "their cells were skipped; other providers completed"}: ` +
           `${[...deadFamilies.values()][0].message.slice(0, 300)}`
         : undefined,
+      searchStrategyHint: searchStrategyEnabled(),
       judgeModel: judgePick.judgeModel,
       judgeNotes,
       armStats: buildArmStats(models, allResults),
