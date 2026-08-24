@@ -22,7 +22,12 @@ import {
 import { repoTools } from "./tools/repo-tools"
 import { fixtureForCaseId, fixtureForRepoUrl, getEstate } from "@/evals/fixtures"
 import { clampConcurrency, drainPool } from "./concurrency"
-import { describeLimits, suggestedConcurrency } from "./rate-limit"
+import {
+  describeLimits,
+  estimateWallClockMinutes,
+  limitsFor,
+  suggestedConcurrency,
+} from "./rate-limit"
 import { notifySkill } from "./skill-hook"
 import {
   appendCase,
@@ -752,6 +757,29 @@ async function executeRun(
   const sustainable = suggestedConcurrency(transports)
   const concurrency = Math.min(requested, sustainable)
   for (const line of describeLimits(transports)) console.log(`[ratelimit] ${line}`)
+  // Say how long this will take before it starts. A rate-limited run that is
+  // working correctly is indistinguishable from a hung one from the outside.
+  const estateCells = cells.filter((c) => c.ec.metadata?.estate).length
+  const avgSteps =
+    cells.length === 0
+      ? 0
+      : (estateCells * ESTATE_MAX_STEPS + (cells.length - estateCells) * DEFAULT_MAX_STEPS) /
+        cells.length
+  const etaMin = estimateWallClockMinutes({
+    providers: transports,
+    cells: cells.length,
+    concurrency,
+    avgStepsPerCell: avgSteps,
+  })
+  if (etaMin >= 5) {
+    console.warn(
+      `[ratelimit] worst case ~${Math.round(etaMin)} min of rate-limit waiting for ` +
+        `${cells.length} cell(s) — the slowest provider allows ` +
+        `${Math.min(...transports.map((t) => limitsFor(t).rpm))} requests/min and a cell makes up ` +
+        `to ${Math.round(avgSteps)} of them in sequence. Cells finish sooner if the model needs ` +
+        `fewer steps.`,
+    )
+  }
   if (concurrency < requested) {
     console.warn(
       `[ratelimit] running ${concurrency} cell(s) in parallel, not ${requested} — that is all ` +

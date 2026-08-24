@@ -300,3 +300,27 @@ export function describeLimits(providers: readonly string[]): string[] {
     return `${p}: ${rpm} RPM (${src("RPM")}), ${tpm.toLocaleString()} TPM (${src("TPM")})`
   })
 }
+
+/**
+ * Rough wall clock a run will take, given the providers' limits.
+ *
+ * Worth printing up front because the dominant term is invisible otherwise. A
+ * cell is a chain of sequential requests, and at a low RPM the limiter spaces
+ * every one of them: at Google's free 5 RPM that is 12s per request, so a
+ * 150-step estate cell spends 30 minutes waiting before you count the model's
+ * own latency. Three epochs of it at concurrency 1 is an hour and a half, which
+ * looks identical to a hang unless someone says so beforehand.
+ */
+export function estimateWallClockMinutes(opts: {
+  providers: readonly string[]
+  cells: number
+  concurrency: number
+  avgStepsPerCell: number
+}): number {
+  const slowestRpm = Math.min(...opts.providers.map((p) => limitsFor(p).rpm))
+  if (!Number.isFinite(slowestRpm) || slowestRpm <= 0) return 0
+  const secondsPerRequest = 60 / slowestRpm
+  const perCellSeconds = opts.avgStepsPerCell * secondsPerRequest
+  const waves = Math.ceil(opts.cells / Math.max(1, opts.concurrency))
+  return (waves * perCellSeconds) / 60
+}
