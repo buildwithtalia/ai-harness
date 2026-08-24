@@ -285,6 +285,14 @@ export type RunManifest = {
   judgeNotes?: string[]
   models: ModelId[]
   caseCount: number
+  /**
+   * Ids of the cases this run planned, in order. The record of *which* cases,
+   * where `caseCount` is only how many — a run scoped with `--repos` or
+   * `--prompts` cannot be resumed without it, because the scoping lives in the
+   * caller's arguments and the completed rows name only the cases that
+   * finished. Absent on runs recorded before this was persisted.
+   */
+  caseIds?: string[]
   scorers: string[]
   aggregate: {
     perModel: Record<

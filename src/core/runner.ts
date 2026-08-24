@@ -37,6 +37,7 @@ import {
   clearLiveProgress,
   ensureRunDir,
   runIdFor,
+  summarizeCellOutcomes,
   writeLiveProgress,
   writeManifest,
   writeRunHeartbeat,
@@ -704,14 +705,6 @@ function buildArmStats(models: ModelId[], all: CaseResult[]): ArmComparison[] {
   return out
 }
 
-/** Cell outcomes, so a manifest can't imply success it didn't have. */
-/**
- * `planned` is passed in rather than derived from `all`, because a run that
- * trips the circuit breaker never records the cells it skipped. Reporting
- * `cellsTotal = all.length` made a run that planned 3 cells, errored on the
- * first and abandoned two read as "1 of 1 cells failed" — a complete tiny run
- * rather than a run cut short with most of it never attempted.
- */
 /**
  * Combine per-scorer results into one number, weighted and renormalised.
  *
@@ -734,33 +727,6 @@ export function weightedAggregate(
     den += w
   }
   return den ? num / den : 0
-}
-
-function errorSummary(
-  all: CaseResult[],
-  planned: number,
-): {
-  cellsTotal: number
-  cellsErrored: number
-  cellsSkipped: number
-  dominantError?: { message: string; count: number }
-} {
-  const skipped = Math.max(0, planned - all.length)
-  const errs = all.filter((r) => r.error)
-  if (!errs.length) return { cellsTotal: planned, cellsErrored: 0, cellsSkipped: skipped }
-  const counts = new Map<string, number>()
-  for (const r of errs) {
-    // Group on a prefix: provider messages often carry a per-request id tail.
-    const key = (r.error!.message || "unknown").slice(0, 200)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  const [message, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-  return {
-    cellsTotal: planned,
-    cellsErrored: errs.length,
-    cellsSkipped: skipped,
-    dominantError: { message, count },
-  }
 }
 
 function aggregateFor(rs: CaseResult[]) {
@@ -1029,6 +995,7 @@ async function executeRun(
       totalCostUsd: spentUsd,
       models,
       caseCount: suite.cases.length,
+      caseIds: suite.cases.map((c) => c.id),
       // The judge is a phase, not a per-cell scorer, but it still contributes a
       // score — list it so a reader isn't misled about what graded this run.
       scorers: [
@@ -1040,7 +1007,7 @@ async function executeRun(
           models.map((m) => [m, aggregateFor(perModelResults[m])]),
         ),
       },
-      ...errorSummary(allResults, cells.length),
+      ...summarizeCellOutcomes(allResults, cells.length),
       // Name the providers that died. "the run aborted" hid which half of the
       // matrix is missing and which half is a real result.
       abortedReason: deadFamilies.size
@@ -1057,6 +1024,7 @@ async function executeRun(
     return manifest
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    const partial = models.flatMap((m) => perModelResults[m] ?? [])
     const manifest: RunManifest = {
       id,
       suite: suite.name,
@@ -1073,12 +1041,16 @@ async function executeRun(
       totalCostUsd: spentUsd,
       models,
       caseCount: suite.cases.length,
+      caseIds: suite.cases.map((c) => c.id),
       scorers: suite.scorers.map((s) => s.name),
       aggregate: {
         perModel: Object.fromEntries(
           models.map((m) => [m, aggregateFor(perModelResults[m] ?? [])]),
         ),
       },
+      // Without this the crash manifest carries no cell counts, so the backfill
+      // infers `cellsTotal` from rows on disk and the run reads as complete.
+      ...summarizeCellOutcomes(partial, cells.length),
     }
     await writeManifest(id, manifest)
     throw err
@@ -1117,6 +1089,12 @@ export async function beginRun(
     budgetUsd: opts.budgetUsd,
     models,
     caseCount: suite.cases.length,
+    // Recorded up front, not just on the terminal manifest: a run that dies
+    // mid-flight is exactly the one worth resuming, and the scoping that
+    // produced this case set (--repos / --prompts / --limit) lives only in the
+    // caller's arguments. Without the ids on disk there is nothing to resume
+    // *to* — the completed rows name only the cases that finished.
+    caseIds: suite.cases.map((c) => c.id),
     scorers: suite.scorers.map((s) => s.name),
     aggregate: {
       perModel: Object.fromEntries(models.map((m) => [m, emptyAggregate()])),

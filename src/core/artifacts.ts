@@ -167,29 +167,71 @@ export async function readManifest(id: string): Promise<RunManifest | null> {
 }
 
 /**
+ * Cells the run set out to execute: (case × target × epoch).
+ *
+ * The plan, not the outcome. Everything that reports "N of M cells" has to
+ * divide by this — dividing by the number of rows on disk turns a run that
+ * died 16 cells into 144 into a complete 16-cell run.
+ */
+export function plannedCells(manifest: RunManifest): number {
+  return manifest.caseCount * manifest.models.length * Math.max(1, manifest.epochs ?? 1)
+}
+
+/**
+ * Cell outcomes, so a manifest can't imply success it didn't have.
+ *
+ * `planned` is passed in rather than derived from `cases`, because a run that
+ * trips the circuit breaker, hits its budget cap, or dies mid-flight never
+ * records the cells it skipped. Reporting `cellsTotal = cases.length` made a
+ * run that planned 3 cells, errored on the first and abandoned two read as
+ * "1 of 1 cells failed" — a complete tiny run rather than a run cut short with
+ * most of it never attempted.
+ */
+export function summarizeCellOutcomes(
+  cases: CaseResult[],
+  planned: number,
+): {
+  cellsTotal: number
+  cellsErrored: number
+  cellsSkipped: number
+  dominantError?: { message: string; count: number }
+} {
+  const cellsSkipped = Math.max(0, planned - cases.length)
+  const errs = cases.filter((c) => c.error)
+  if (!errs.length) return { cellsTotal: planned, cellsErrored: 0, cellsSkipped }
+  const counts = new Map<string, number>()
+  for (const c of errs) {
+    // Group on a prefix: provider messages often carry a per-request id tail.
+    const key = (c.error!.message || "unknown").slice(0, 200)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const [message, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
+  return { cellsTotal: planned, cellsErrored: errs.length, cellsSkipped, dominantError: { message, count } }
+}
+
+/**
  * Derive cell-outcome counts for runs recorded before the manifest carried
  * them.
  *
  * Without this, a historic run where every cell errored renders as a clean
  * `completed` with an all-zero matrix — indistinguishable from "the models
- * scored zero". The numbers are recoverable from cases.jsonl, so recover them
- * once and persist rather than leaving old runs unreadable.
+ * scored zero". The numbers are recoverable from cases.jsonl plus the plan, so
+ * recover them once and persist rather than leaving old runs unreadable.
  */
 async function backfillCellOutcomes(id: string, manifest: RunManifest): Promise<RunManifest> {
-  if (manifest.cellsTotal != null || manifest.status === "running") return manifest
+  // Gate on cellsSkipped, not cellsTotal. Every writer of these counts emits
+  // all three together, so a missing cellsSkipped means either nothing wrote
+  // them or an earlier version of *this* function did — and that version set
+  // `cellsTotal = cases.length`, which is the bug being fixed. Gating on
+  // cellsTotal would treat those manifests as already-correct and leave the
+  // wrong number persisted for good.
+  if (manifest.cellsSkipped != null || manifest.status === "running") return manifest
   const cases = await readCases(id)
   if (!cases.length) return manifest
 
-  const errs = cases.filter((c) => c.error)
-  const patched: RunManifest = { ...manifest, cellsTotal: cases.length, cellsErrored: errs.length }
-  if (errs.length) {
-    const counts = new Map<string, number>()
-    for (const c of errs) {
-      const key = (c.error?.message || "unknown").slice(0, 200)
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-    }
-    const [message, count] = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]
-    patched.dominantError = { message, count }
+  const patched: RunManifest = {
+    ...manifest,
+    ...summarizeCellOutcomes(cases, plannedCells(manifest)),
   }
   try {
     await writeManifest(id, patched)
@@ -232,6 +274,12 @@ async function reapZombieIfDead(id: string, manifest: RunManifest): Promise<RunM
   const startedTs = Date.parse(manifest.startedAt)
   if (Number.isFinite(startedTs) && now - startedTs < HEARTBEAT_GRACE_MS) return manifest
 
+  // Account for the cells explicitly. The reaper is the only writer of this
+  // manifest now — the process that would have written cell counts is gone —
+  // and without them backfillCellOutcomes fills `cellsTotal` from the number of
+  // rows on disk, so a run killed 16 cells into 144 reports "16 of 16 attempted,
+  // 0 failed": a clean small run rather than one that never got started.
+  const done = await readCases(id)
   const patched: RunManifest = {
     ...manifest,
     status: "errored",
@@ -240,6 +288,7 @@ async function reapZombieIfDead(id: string, manifest: RunManifest): Promise<RunM
       "Process died before the run completed — no heartbeat for over a minute. " +
         "Usually a dev-server restart or code-change reload while the run was in flight.",
     finishedAt: manifest.finishedAt ?? new Date().toISOString(),
+    ...summarizeCellOutcomes(done, plannedCells(manifest)),
   }
   try {
     await writeManifest(id, patched)

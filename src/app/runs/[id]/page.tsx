@@ -1,6 +1,13 @@
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { liveProgressKey, readCases, readLiveProgress, readManifest } from "@/core/artifacts"
+import {
+  liveProgressKey,
+  plannedCells,
+  readCases,
+  readLiveProgress,
+  readManifest,
+} from "@/core/artifacts"
+import { planResume } from "@/core/resume"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -13,6 +20,7 @@ import {
 } from "@/components/ui/table"
 import { CaseDrawer } from "./case-drawer"
 import { AutoRefresh } from "./auto-refresh"
+import { ResumeRun } from "./resume-run"
 import type { CaseResult, ModelId } from "@/core/types"
 
 export const dynamic = "force-dynamic"
@@ -52,9 +60,10 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
     }
   }
 
-  const totalCells = manifest.caseCount * manifest.models.length * (manifest.epochs ?? 1)
+  const totalCells = plannedCells(manifest)
   const completedCells = cases.length
   const runningCells = Object.keys(live).length
+  const resume = status === "running" ? null : planResume(manifest)
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-10 space-y-6">
@@ -107,13 +116,16 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
           </div>
         )}
 
-        {/* A run can finish its work list with every cell having failed. That is
-            not a result, and an all-zero matrix reads as "the models did badly"
-            unless we say otherwise. */}
-        {(manifest.cellsErrored ?? 0) > 0 && (
+        {/* A run can finish its work list with every cell having failed, or die
+            with most of the matrix never dispatched. Neither is a result, and an
+            all-zero matrix reads as "the models did badly" unless we say
+            otherwise. Skipped cells count as much as errored ones here: a run
+            killed 16 cells into 144 has no errors to report and everything to
+            explain. */}
+        {((manifest.cellsErrored ?? 0) > 0 || (manifest.cellsSkipped ?? 0) > 0) && (
           <div
             className={`mt-3 rounded border px-3 py-2.5 text-xs ${
-              manifest.cellsErrored === manifest.cellsTotal
+              (manifest.cellsErrored ?? 0) + (manifest.cellsSkipped ?? 0) === manifest.cellsTotal
                 ? "border-destructive/50 bg-destructive/10 text-destructive"
                 : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
             }`}
@@ -127,9 +139,14 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
                 // Skipped cells were never attempted, so folding them into
                 // "failed" would blame the model for a run that stopped early.
                 const tail = skipped
-                  ? ` ${skipped} more ${skipped === 1 ? "was" : "were"} never attempted.`
+                  ? ` ${skipped} of ${total} planned cell${skipped === 1 ? " was" : "s were"} never attempted.`
                   : ""
-                if (errored > 0 && errored === attempted) {
+                if (errored === 0) {
+                  return `This run stopped early — only ${attempted} of ${total} planned cells ran.${
+                    attempted ? " Scores below cover that fraction, not the full matrix." : ""
+                  }`
+                }
+                if (errored === attempted) {
                   return `No cell produced an answer — all ${errored} attempted failed.${tail} There is nothing to read in the matrix below.`
                 }
                 return `${errored} of ${attempted} attempted cells failed — scores below are over the remainder.${tail}`
@@ -145,6 +162,13 @@ export default async function RunPage(props: PageProps<"/runs/[id]">) {
                 Run stopped early: the provider rejected a request in a way that would repeat, so
                 remaining cells were skipped rather than burned.
               </div>
+            )}
+            {resume && (
+              <ResumeRun
+                runId={id}
+                cellsRemaining={resume.cellsRemaining}
+                reason={resume.resumable ? undefined : resume.reason}
+              />
             )}
           </div>
         )}
